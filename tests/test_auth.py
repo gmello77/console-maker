@@ -130,13 +130,17 @@ def test_login_success_sends_credentials_only_to_the_https_endpoint():
     a = auth.login(" me@x.it ", "pw-di-prova", fs)
     assert (a.user, a.sig) == ("u", "s")
     url, params, data = fs.sent
-    assert url.startswith("https://archive.org/") and params == {"op": "authenticate"}
+    assert url.startswith("https://archive.org/") and params == {"op": "login"}
     assert data == {"email": "me@x.it", "password": "pw-di-prova"}
 
 
 @pytest.mark.parametrize("resp, text", [
-    (FakeResp(401, {"error": "Unauthorized", "success": False}), "non corrette"),
-    (FakeResp(200, {"success": False, "values": {"reason": "account_not_found"}}), "non corrette"),
+    (FakeResp(401, {"success": False, "values": {"reason": "account_not_found"}}),
+     "account non trovato"),
+    (FakeResp(200, {"success": False, "values": {"reason": "account_bad_password"}}),
+     "password errata"),
+    # un 401 generico NON va mai presentato come "password sbagliata"
+    (FakeResp(401, {"error": "Unauthorized", "success": False}), "Unauthorized.*HTTP 401"),
     (FakeResp(200, {"success": False, "values": {"reason": "ratelimit"}}), "ratelimit"),
     (FakeResp(502, ValueError("html")), "risposta inattesa"),
     (FakeResp(200, {"success": True, "values": {}}), "non ha restituito la sessione"),
@@ -146,6 +150,8 @@ def test_login_errors_are_clear_and_never_contain_the_password(resp, text):
     with pytest.raises(AuthError, match=text) as e:
         auth.login("me@x.it", "pw-segretissima", FakeSession(resp))
     assert "pw-segretissima" not in str(e.value)
+    if "Unauthorized" in text:
+        assert "password errata" not in str(e.value)
 
 
 def test_login_requires_both_fields():

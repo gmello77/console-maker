@@ -12,7 +12,8 @@ Stato al 2026-11-20. Le voci sono in ordine di lavoro. Convenzioni: `[x]` fatto 
 - [~] **Login archive.org** (per gli item riservati, es. `htgdb-gamepacks`, che dà 401 senza login).
   - Fatto e testato (59 test): `cm/auth.py` (sessione salvata con permessi 600, cookie solo per archive.org e sottodomini in HTTPS, password mai salvata, mai nei log), `cm/login_screen.py`, pulsante e stato nella schermata, README.
   - Bug risolto: l'id `login` era uguale nel pulsante principale e nella finestra, quindi il clic su "Accedi" apriva una seconda finestra. Ora gli id sono distinti e le finestre fermano la propagazione dei clic.
-  - **Non verificato:** la risposta di successo dell'endpoint `xauthn` (provato solo con credenziali false) e che i cookie arrivino davvero al server dei dati dopo il redirect. Serve un account vero: provare con `htgdb-gamepacks`. Se un account gratuito non basta, il 401 col login ora dà un messaggio dedicato.
+  - Corretto il 2026-11-20: il login usava `op=authenticate` (errore mio, scritto a memoria); il client ufficiale `ia` usa `op=login`. I messaggi d'errore ora dicono solo il motivo che archive.org dichiara (`account_not_found`, `account_bad_password`), un 401 generico non è più "password errata".
+  - **Non verificato con un account vero:** il login riuscito (il formato della risposta è quello letto nel codice di `ia`, provato solo con credenziali false) e che i cookie arrivino al server dei dati dopo il redirect. Serve un account vero: provare con `htgdb-gamepacks`. Se un account gratuito non basta, il 401 col login ora dà un messaggio dedicato.
 
 ## Prossimi punti (priorità alta)
 - [ ] **File BIOS**: sezione `bios:` in `roms.yaml` con URL e destinazione in `/userdata/bios/` (PlayStation, Saturn, Neo Geo...). File: `cm/roms.py`, `cm/pipeline.py`.

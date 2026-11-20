@@ -107,7 +107,7 @@ def apply(session: requests.Session, auth: ArchiveAuth | None) -> requests.Sessi
 
 
 def login(email: str, password: str, session: requests.Session | None = None) -> ArchiveAuth:
-    """Autentica su archive.org (lo stesso endpoint usato da `ia configure`).
+    """Autentica su archive.org (stesso endpoint e stessa operazione, `op=login`, di `ia configure`).
 
     La password va solo a questo URL HTTPS. Non compare mai nei messaggi d'errore.
     """
@@ -116,7 +116,7 @@ def login(email: str, password: str, session: requests.Session | None = None) ->
     s = session or requests.Session()
     s.headers.setdefault("User-Agent", USER_AGENT)
     try:
-        r = s.post(LOGIN_URL, params={"op": "authenticate"},
+        r = s.post(LOGIN_URL, params={"op": "login"},
                    data={"email": email.strip(), "password": password}, timeout=30)
     except requests.RequestException as e:
         raise AuthError(f"impossibile contattare archive.org: {type(e).__name__}") from None
@@ -125,11 +125,16 @@ def login(email: str, password: str, session: requests.Session | None = None) ->
     except ValueError:
         raise AuthError(f"risposta inattesa da archive.org (HTTP {r.status_code})") from None
     if not data.get("success"):
-        reason = ((data.get("values") or {}).get("reason") or data.get("error") or "").lower()
-        if r.status_code == 401 or "password" in reason or "not_found" in reason or \
-                "unauthorized" in reason:
-            raise AuthError("email o password non corrette")
-        raise AuthError(f"login rifiutato da archive.org ({reason or r.status_code})")
+        reason = str((data.get("values") or {}).get("reason") or data.get("error") or "")
+        # Messaggi solo per i motivi che archive.org dichiara davvero: un 401 generico NON
+        # significa "password sbagliata" (con l'operazione sbagliata dava sempre 401).
+        if reason == "account_not_found":
+            raise AuthError("account non trovato: usa l'email dell'account archive.org, "
+                            "non il nome utente")
+        if reason == "account_bad_password":
+            raise AuthError("password errata")
+        raise AuthError(f"login rifiutato da archive.org: {reason or 'nessun motivo indicato'} "
+                        f"(HTTP {r.status_code})")
     cookies = (data.get("values") or {}).get("cookies") or {}
     user, sig = cookies.get("logged-in-user"), cookies.get("logged-in-sig")
     if not user or not sig:

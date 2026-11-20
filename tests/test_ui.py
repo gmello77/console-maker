@@ -198,7 +198,7 @@ async def test_login_failure_keeps_dialog_open_with_clear_message(tmp_path, monk
     from textual.widgets import Label
 
     def bad_login(email, password, session=None):
-        raise auth_mod.AuthError("email o password non corrette")
+        raise auth_mod.AuthError("password errata")
     monkeypatch.setattr(auth_mod, "login", bad_login)
     (tmp_path / "roms.yaml").write_text(ROMS)
     app = ConsoleMakerApp(root=tmp_path)
@@ -213,5 +213,5 @@ async def test_login_failure_keeps_dialog_open_with_clear_message(tmp_path, monk
         await app.workers.wait_for_complete()
         await pilot.pause(0.3)
         assert isinstance(app.screen, LoginScreen)
-        assert "non corrette" in str(scr.query_one("#msg", Label).render())
+        assert "password errata" in str(scr.query_one("#msg", Label).render())
         assert scr.query_one("#password", Input).value == ""            # svuotata subito
