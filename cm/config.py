@@ -10,6 +10,7 @@ DEFAULTS = {
     "disk_gb": 32,
     "systems": [],            # vuoto = tutti quelli con almeno un link
     "options": ["fit_disk", "verify_md5", "keep_cache"],
+    "connections": 4,         # connessioni parallele per file (1 = download semplice)
 }
 
 

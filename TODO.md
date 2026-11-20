@@ -7,6 +7,7 @@ Stato al 2026-11-20. Le voci sono in ordine di lavoro. Convenzioni: `[x]` fatto 
 - [x] Punto 1: `item:` di archive.org con `include`/`exclude`/`files`, finestra "Scegli i giochi" (ricerca, file multi-disco raggruppati), scelta salvata in `selections.yaml`. Provato su archive.org vero solo per elenco file e URL.
 - [x] Punto 2: adattamento automatico al disco (`priority` per sistema, opzione attiva di default, dimensione esatta letta dall'MBR dell'immagine compressa).
 - [x] Punto 3, BIOS: sezione `bios:` in `roms.yaml` (`urls`/`item`, `dir`, `for`), in `userdata/bios`; contati nello spazio, mai sfoltiti, esclusi se i loro sistemi non ci sono. Provato con Docker vero. Non provato: BIOS reali su un dispositivo.
+- [x] **Download a pezzi in parallelo** (`cm/download.py`): 4 connessioni di default (`connections` in `config.yaml`), ripresa per pezzo, fallback automatico se il server non accetta Range. Misurato su archive.org: ~7 volte più veloce di una connessione.
 - [x] Due barre di avanzamento (file in corso e totale ROM+BIOS) con velocità e tempo stimato.
 - [x] Download: stop immediato su 401/403/404/410 con messaggio chiaro, avviso se un item è ad accesso riservato.
 
@@ -29,7 +30,8 @@ Stato al 2026-11-20. Le voci sono in ordine di lavoro. Convenzioni: `[x]` fatto 
 ## Qualità e robustezza
 - [ ] Scelta del canale e della versione (stable o release candidate; oggi l'RG SP usa la RC senza chiedere).
 - [ ] Immagine finale compressa (`.img.xz` o `.zip`, che Etcher legge).
-- [ ] Download in parallelo (velocità ed ETA nella schermata sono già fatti).
+- [ ] Scaricare più file contemporaneamente (oggi i file vanno in serie, ognuno con 4 connessioni; velocità ed ETA nella schermata sono già fatti).
+- [ ] Controllo di integrità dei pezzi scaricati in parallelo (oggi si fida del server; il md5 finale di archive.org non è ancora verificato per le ROM).
 - [ ] Aggiungere ROM a un'immagine o a una SD già pronta, senza rifare tutto.
 - [ ] Filtri per regione (EU/USA/JP) e per demo/beta/proto.
 - [ ] Priorità per singolo gioco, non solo per sistema (oggi dentro un sistema vale l'ordine alfabetico).

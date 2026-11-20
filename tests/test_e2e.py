@@ -69,7 +69,7 @@ def fake_net(tmp_path, monkeypatch):
     bios_dc = tmp_path / "net" / "dc_boot.bin"
     bios_dc.write_bytes(b"DCBIOS")
 
-    def fake_download(url, dest, progress=None, retries=4, auth=None):
+    def fake_download(url, dest, progress=None, retries=4, auth=None, connections=None):
         src = {IMG_NAME: base_gz, "nes-set.zip": set_zip, "pacman.zip": arcade,
                "scph1001.bin": bios_psx, "dc_boot.bin": bios_dc}[dest.name]
         dest.parent.mkdir(parents=True, exist_ok=True)

@@ -46,6 +46,9 @@ Invece di elencare ogni file puoi indicare un intero item di archive.org:
 
 Lo script legge l'elenco dei file da archive.org (con dimensioni). Con **Scegli i giochi** nella schermata apri l'elenco del sistema evidenziato, cerchi per nome e spunti solo quelli che vuoi: i file di uno stesso gioco (cue+bin, dischi multipli, m3u) restano insieme. La scelta va in `selections.yaml` (non tocca `roms.yaml`). Un item senza filtri né scelta scarica tutto, quindi controlla il totale mostrato.
 
+### Download veloci (più connessioni)
+archive.org limita la velocità per singola connessione, quindi ogni file viene scaricato **a pezzi in parallelo** (4 connessioni di default; nei miei test su archive.org una sola connessione dava ~0,09 MB/s e quattro ~0,6 MB/s, otto non miglioravano). Prima di partire una richiesta di prova verifica che il server accetti davvero gli intervalli: se no, si scarica come prima in un solo flusso. I file sotto 16 MB si scaricano in un solo flusso. Se l'operazione si interrompe, alla ripresa si rifanno solo i pezzi mancanti (`*.part` e `*.part.state` in `cache/`). Per cambiare il numero di connessioni (1-16, 1 = flusso unico) modifica `connections` in `config.yaml`.
+
 ### BIOS
 Molti emulatori (PlayStation, Saturn, Neo Geo...) non partono senza BIOS. Nella sezione `bios:` di `roms.yaml` ogni gruppo ha `urls` o `item` come i sistemi, più `dir` (sottocartella di `userdata/bios`, vuota = direttamente in `bios/`) e `for` (i sistemi per cui servono). Un gruppo con `for` entra nell'immagine solo se almeno uno di quei sistemi c'è ancora dopo l'adattamento al disco; senza `for` entra sempre. I BIOS contano nello spazio e non vengono mai sfoltiti. L'opzione "Non includere i file BIOS" li esclude.
 

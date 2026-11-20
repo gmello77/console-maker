@@ -12,7 +12,8 @@ from typing import Callable, Mapping
 
 from .auth import ArchiveAuth
 from .distro import Release, fetch_md5, find_latest, target_by_key
-from .download import download, filename_from_url, gunzip_sparse, md5_file, remote_size
+from .download import (DEFAULT_CONNECTIONS, download, filename_from_url, gunzip_sparse,
+                       md5_file, remote_size)
 from .fit import fit_systems
 from .roms import System, applicable_bios, dir_size, stage_system
 
@@ -45,6 +46,7 @@ class Settings:
     fit_to_disk: bool = False      # se non ci stanno, toglie i giochi meno importanti
     sizes: Mapping[str, int | None] = field(default_factory=dict)   # url -> byte (se noti)
     bios: list[System] = field(default_factory=list)   # gruppi BIOS di roms.yaml (gia' espansi)
+    connections: int = DEFAULT_CONNECTIONS   # connessioni parallele per file
     auth: ArchiveAuth | None = None   # login archive.org: usato solo per le ROM, mai per Batocera
 
 
@@ -161,7 +163,8 @@ def run(settings: Settings, log: Log, progress: Progress, overall: Overall | Non
     kind = "release candidate" if rel.is_release_candidate else "stable"
     log(f"Batocera {rel.version} ({kind}, {rel.date}) per {rel.target.label}")
     base_gz = download(rel.url, cache_base / rel.filename,
-                       lambda d, t: progress("Immagine Batocera", d, t))
+                       lambda d, t: progress("Immagine Batocera", d, t),
+                       connections=settings.connections)
     if settings.verify_md5:
         expected = fetch_md5(rel)
         if expected is None:
@@ -221,7 +224,8 @@ def run(settings: Settings, log: Log, progress: Progress, overall: Overall | Non
                 progress(label, d, t)
                 tracker.partial(d)
 
-            dest = download(url, cache_root / system.key / name, on_progress, auth=settings.auth)
+            dest = download(url, cache_root / system.key / name, on_progress, auth=settings.auth,
+                            connections=settings.connections)
             tracker.finished(dest)
         stage_system(system, cache_root, stage, area=area)
     if settings.create_all_dirs:

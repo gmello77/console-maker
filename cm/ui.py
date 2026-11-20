@@ -280,7 +280,8 @@ class ConsoleMakerApp(App):
             log.write("Scegli la dimensione del disco.")
             return
         opts = list(self.query_one("#options", SelectionList).selected)
-        config.save(self.cfg_path, {"device": self._device_key(),
+        conns = self._connections()
+        config.save(self.cfg_path, {"device": self._device_key(), "connections": conns,
                                     "disk_gb": int(disk) if disk == int(disk) else disk,
                                     "systems": keys, "options": opts})
         settings = pipeline.Settings(
@@ -288,12 +289,18 @@ class ConsoleMakerApp(App):
             systems=[self.expanded[k] for k in keys],
             verify_md5="verify_md5" in opts, keep_cache="keep_cache" in opts,
             fit_to_disk="fit_disk" in opts, sizes=dict(self.sizes), auth=self.auth,
+            connections=conns,
             bios=[] if "skip_bios" in opts else list(self.bios_expanded.values()),
             create_all_dirs="create_all_dirs" in opts,
             all_system_keys=tuple(self.roms.systems), root=self.root)
         self.reset_progress()
         self.set_running(True)
         self.run_pipeline(settings)
+
+    def _connections(self) -> int:
+        """Connessioni per file dal config.yaml, limitate a 1-16 (valori strani = predefinito)."""
+        v = self.saved.get("connections")
+        return v if isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 16 else 4
 
     def selected_bios(self) -> list[System]:
         """BIOS che finirebbero nell'immagine con la scelta attuale (come fa la pipeline)."""
