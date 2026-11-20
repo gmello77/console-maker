@@ -14,10 +14,12 @@ from .auth import ArchiveAuth
 from .distro import Release, fetch_md5, find_latest, target_by_key
 from .download import download, filename_from_url, gunzip_sparse, md5_file, remote_size
 from .fit import fit_systems
-from .roms import System, dir_size, stage_system
+from .roms import System, applicable_bios, dir_size, stage_system
 
 Log = Callable[[str], None]
 Progress = Callable[[str, int, int], None]  # (etichetta, fatti, totale)
+# (file fatti, file totali, byte fatti, byte totali) per ROM e BIOS
+Overall = Callable[[int, int, int, int], None]
 
 ROOT = Path(__file__).resolve().parent.parent
 MiB = 1024 * 1024
@@ -42,6 +44,7 @@ class Settings:
     root: Path = ROOT
     fit_to_disk: bool = False      # se non ci stanno, toglie i giochi meno importanti
     sizes: Mapping[str, int | None] = field(default_factory=dict)   # url -> byte (se noti)
+    bios: list[System] = field(default_factory=list)   # gruppi BIOS di roms.yaml (gia' espansi)
     auth: ArchiveAuth | None = None   # login archive.org: usato solo per le ROM, mai per Batocera
 
 
@@ -116,10 +119,34 @@ def _run_builder(img: Path, stage: Path, share_bytes: int, log: Log) -> None:
         raise PipelineError(f"il builder e' fallito (codice {proc.returncode})")
 
 
-def run(settings: Settings, log: Log, progress: Progress) -> Path:
+class _Overall:
+    """Avanzamento complessivo dei download di ROM e BIOS."""
+
+    def __init__(self, files_total: int, bytes_total: int, cb: Overall | None) -> None:
+        self.files_total, self.bytes_total, self.cb = files_total, bytes_total, cb
+        self.files_done = 0
+        self.bytes_done = 0
+
+    def _emit(self, partial: int = 0) -> None:
+        if self.cb:
+            self.cb(self.files_done, self.files_total, self.bytes_done + partial, self.bytes_total)
+
+    start = _emit
+
+    def partial(self, done: int) -> None:
+        self._emit(done)
+
+    def finished(self, dest: Path) -> None:
+        self.files_done += 1
+        self.bytes_done += dest.stat().st_size
+        self._emit()
+
+
+def run(settings: Settings, log: Log, progress: Progress, overall: Overall | None = None) -> Path:
     root = settings.root
     cache_base = root / "cache" / "base"
     cache_roms = root / "cache" / "roms"
+    cache_bios = root / "cache" / "bios"
     work = root / "work"
     stage = work / "stage"
     out_dir = root / "out"
@@ -148,13 +175,18 @@ def run(settings: Settings, log: Log, progress: Progress) -> Path:
 
     # 1b. se serve, adatta la selezione al disco (prima di scaricare ROM che poi non entrano)
     systems = settings.systems
+    sizes = dict(settings.sizes)
     if settings.fit_to_disk:
-        sizes = dict(settings.sizes)
-        for url in (u for s in systems for u in s.urls):
+        bios_pre = applicable_bios(settings.bios, {s.key for s in systems})
+        for url in (u for s in [*systems, *bios_pre] for u in s.urls):
             if sizes.get(url) is None:
                 sizes[url] = remote_size(url, auth=settings.auth)
-        budget = max_rom_bytes(settings.disk_gb, partition2_start_gz(base_gz))
-        fit = fit_systems(systems, sizes, budget)
+        # i BIOS sono piccoli e servono: si riserva il loro spazio prima di sfoltire le ROM
+        bios_bytes = sum(sizes.get(u) or 0 for b in bios_pre for u in b.urls)
+        if bios_bytes:
+            log(f"BIOS: riservo {bios_bytes / 1e6:.0f} MB")
+        budget = max_rom_bytes(settings.disk_gb, partition2_start_gz(base_gz)) - bios_bytes
+        fit = fit_systems(systems, sizes, max(budget, 0))
         if fit.changed:
             log(f"su {settings.disk_gb:g} GB non entra tutto: tengo {fit.kept_bytes / 1e9:.2f} GB "
                 f"di ROM, tolgo {fit.dropped_bytes / 1e9:.2f} GB")
@@ -168,20 +200,36 @@ def run(settings: Settings, log: Log, progress: Progress) -> Path:
                                 "piu' grande")
         systems = fit.systems
 
-    # 2. ROM
-    for system in systems:
+    # 2. ROM e BIOS (i BIOS solo se resta almeno uno dei sistemi per cui servono)
+    bios = applicable_bios(settings.bios, {s.key for s in systems})
+    skipped = [b.key for b in settings.bios if b not in bios]
+    if skipped:
+        log(f"BIOS non necessari (nessun sistema collegato nell'immagine): {', '.join(skipped)}")
+    groups = [("ROM", s, cache_roms, "roms") for s in systems] + \
+             [("BIOS", b, cache_bios, "bios") for b in bios]
+    plan = [(s, u) for _, s, _, _ in groups for u in s.urls]
+    total = sum(sizes.get(u) or s.sizes.get(u) or 0 for s, u in plan)
+    tracker = _Overall(len(plan), total, overall)
+    tracker.start()
+    for kind, system, cache_root, area in groups:
         for url in system.urls:
-            log(f"[{system.key}] {filename_from_url(url)}")
-            download(url, cache_roms / system.key / filename_from_url(url),
-                     lambda d, t, k=system.key: progress(f"ROM {k}", d, t), auth=settings.auth)
-        progress(f"ROM {system.key}", 1, 1)
-        stage_system(system, cache_roms, stage)
+            name = filename_from_url(url)
+            log(f"[{kind} {system.key}] {name}")
+            label = f"{kind} {system.key}: {name}"
+
+            def on_progress(d: int, t: int, label: str = label) -> None:
+                progress(label, d, t)
+                tracker.partial(d)
+
+            dest = download(url, cache_root / system.key / name, on_progress, auth=settings.auth)
+            tracker.finished(dest)
+        stage_system(system, cache_root, stage, area=area)
     if settings.create_all_dirs:
         for key in settings.all_system_keys:
             (stage / "roms" / key).mkdir(parents=True, exist_ok=True)
 
     rom_bytes = dir_size(stage)
-    log(f"ROM pronte: {rom_bytes / 1e9:.2f} GB")
+    log(f"ROM e BIOS pronti: {rom_bytes / 1e9:.2f} GB")
 
     # 3. immagine di lavoro
     name = f"batocera-{rel.target.key}-{rel.version}-{rel.date}-roms.img"
@@ -209,6 +257,7 @@ def run(settings: Settings, log: Log, progress: Progress) -> Path:
     shutil.rmtree(work, ignore_errors=True)
     if not settings.keep_cache:
         shutil.rmtree(cache_roms, ignore_errors=True)
+        shutil.rmtree(cache_bios, ignore_errors=True)
     progress("Scrittura immagine", 1, 1)
     log(f"FATTO: {final}")
     return final

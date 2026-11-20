@@ -7,7 +7,7 @@ import shutil
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Mapping
 from urllib.parse import urlparse
 
@@ -45,6 +45,8 @@ class System:
     exclude: str | None = None
     sizes: Mapping[str, int] = field(default_factory=dict, compare=False)  # url -> byte noti
     priority: int = 0                         # piu' alta = tenuto per primo se manca spazio
+    dir: str = ""                             # solo BIOS: sottocartella di userdata/bios
+    only_for: tuple[str, ...] = ()            # solo BIOS: servono se c'e' uno di questi sistemi
 
     @property
     def has_links(self) -> bool:
@@ -55,6 +57,7 @@ class System:
 class RomsConfig:
     systems: dict[str, System]
     warnings: list[str] = field(default_factory=list)
+    bios: dict[str, System] = field(default_factory=dict)
 
 
 def load_roms(path: Path) -> RomsConfig:
@@ -68,70 +71,109 @@ def load_roms(path: Path) -> RomsConfig:
     return parse_roms(data)
 
 
+def _check_key(key: str, what: str) -> str:
+    key = str(key)
+    if not key.replace("-", "").replace("_", "").isalnum() or key != key.lower():
+        raise RomsConfigError(f"chiave {what} non valida: {key!r} (minuscolo, lettere e cifre)")
+    return key
+
+
+def _check_dir(value: object, where: str) -> str:
+    if value in (None, ""):
+        return ""
+    if not isinstance(value, str):
+        raise RomsConfigError(f"{where}: 'dir' deve essere un testo")
+    p = PurePosixPath(value)
+    if "\\" in value or p.is_absolute() or ".." in p.parts:
+        raise RomsConfigError(f"{where}: 'dir' deve essere una sottocartella relativa "
+                              f"(niente '..', '/' iniziale o '\\'): {value!r}")
+    return "" if str(p) == "." else str(p)
+
+
+def _build(key: str, body: object, cfg: RomsConfig, seen: dict[str, str], kind: str) -> System:
+    where = f"sistema {key}" if kind == "systems" else f"bios {key}"
+    body = body or {}
+    if not isinstance(body, dict):
+        raise RomsConfigError(f"{where}: formato non valido")
+    urls = body.get("urls") or []
+    if not isinstance(urls, list) or not all(isinstance(u, str) for u in urls):
+        raise RomsConfigError(f"{where}: 'urls' deve essere una lista di stringhe")
+    item = body.get("item")
+    if item is not None and (not isinstance(item, str) or not archive.ITEM_RE.match(item)):
+        raise RomsConfigError(f"{where}: 'item' non e' un identificativo archive.org: {item!r}")
+    files = body.get("files")
+    if files is not None and (not isinstance(files, list)
+                              or not all(isinstance(f, str) for f in files)):
+        raise RomsConfigError(f"{where}: 'files' deve essere una lista di nomi file")
+    priority = body.get("priority", 0)
+    if isinstance(priority, bool) or not isinstance(priority, int):
+        raise RomsConfigError(f"{where}: 'priority' deve essere un numero intero")
+    rx = {}
+    for opt in ("include", "exclude"):
+        val = body.get(opt)
+        if val is not None:
+            try:
+                re.compile(str(val))
+            except re.error as e:
+                raise RomsConfigError(f"{where}: '{opt}' non e' una regex valida: {e}")
+            rx[opt] = str(val)
+    if (files is not None or rx) and not item:
+        cfg.warnings.append(f"{key}: 'files'/'include'/'exclude' valgono solo con 'item'")
+    if kind == "systems" and key not in KNOWN_SYSTEMS:
+        cfg.warnings.append(f"{key}: sistema non nella lista nota, controlla il nome cartella")
+    only_for: tuple[str, ...] = ()
+    bios_dir = ""
+    if kind == "bios":
+        bios_dir = _check_dir(body.get("dir"), where)
+        raw = body.get("for") or []
+        if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+            raise RomsConfigError(f"{where}: 'for' deve essere una lista di sistemi")
+        only_for = tuple(raw)
+    clean = []
+    for u in urls:
+        u = u.strip()
+        p = urlparse(u)
+        if p.scheme not in ("http", "https") or not p.hostname:
+            raise RomsConfigError(f"{where}: URL non valido: {u!r}")
+        if not (p.hostname == "archive.org" or p.hostname.endswith(".archive.org")):
+            cfg.warnings.append(f"{key}: {u} non e' su archive.org")
+        if u in seen:
+            cfg.warnings.append(f"URL duplicato in {key} (gia' in {seen[u]}): {u}")
+            continue
+        seen[u] = key
+        clean.append(u)
+    return System(
+        key=key, name=str(body.get("name") or key), urls=tuple(clean),
+        extract=bool(body.get("extract", False)), item=item,
+        files=tuple(files) if files is not None else None,
+        include=rx.get("include"), exclude=rx.get("exclude"), priority=priority,
+        dir=bios_dir, only_for=only_for)
+
+
 def parse_roms(data: object) -> RomsConfig:
     if not isinstance(data, dict) or not isinstance(data.get("systems"), dict):
         raise RomsConfigError("roms.yaml: manca la sezione 'systems:'")
     cfg = RomsConfig(systems={})
     seen: dict[str, str] = {}
     for key, body in data["systems"].items():
-        key = str(key)
-        if not key.replace("-", "").replace("_", "").isalnum() or key != key.lower():
-            raise RomsConfigError(
-                f"chiave sistema non valida: {key!r} (usa il nome cartella Batocera, minuscolo)")
-        body = body or {}
-        if not isinstance(body, dict):
-            raise RomsConfigError(f"sistema {key}: formato non valido")
-        urls = body.get("urls") or []
-        if not isinstance(urls, list) or not all(isinstance(u, str) for u in urls):
-            raise RomsConfigError(f"sistema {key}: 'urls' deve essere una lista di stringhe")
-        item = body.get("item")
-        if item is not None and (not isinstance(item, str) or not archive.ITEM_RE.match(item)):
-            raise RomsConfigError(f"sistema {key}: 'item' non e' un identificativo archive.org: {item!r}")
-        files = body.get("files")
-        if files is not None and (not isinstance(files, list)
-                                  or not all(isinstance(f, str) for f in files)):
-            raise RomsConfigError(f"sistema {key}: 'files' deve essere una lista di nomi file")
-        priority = body.get("priority", 0)
-        if isinstance(priority, bool) or not isinstance(priority, int):
-            raise RomsConfigError(f"sistema {key}: 'priority' deve essere un numero intero")
-        rx = {}
-        for opt in ("include", "exclude"):
-            val = body.get(opt)
-            if val is not None:
-                try:
-                    re.compile(str(val))
-                except re.error as e:
-                    raise RomsConfigError(f"sistema {key}: '{opt}' non e' una regex valida: {e}")
-                rx[opt] = str(val)
-        if (files is not None or rx) and not item:
-            cfg.warnings.append(f"{key}: 'files'/'include'/'exclude' valgono solo con 'item'")
-        if key not in KNOWN_SYSTEMS:
-            cfg.warnings.append(f"{key}: sistema non nella lista nota, controlla il nome cartella")
-        clean = []
-        for u in urls:
-            u = u.strip()
-            p = urlparse(u)
-            if p.scheme not in ("http", "https") or not p.hostname:
-                raise RomsConfigError(f"sistema {key}: URL non valido: {u!r}")
-            if not (p.hostname == "archive.org" or p.hostname.endswith(".archive.org")):
-                cfg.warnings.append(f"{key}: {u} non e' su archive.org")
-            if u in seen:
-                cfg.warnings.append(f"URL duplicato in {key} (gia' in {seen[u]}): {u}")
-                continue
-            seen[u] = key
-            clean.append(u)
-        cfg.systems[key] = System(
-            key=key,
-            name=str(body.get("name") or key),
-            urls=tuple(clean),
-            extract=bool(body.get("extract", False)),
-            item=item,
-            files=tuple(files) if files is not None else None,
-            include=rx.get("include"),
-            exclude=rx.get("exclude"),
-            priority=priority,
-        )
+        key = _check_key(key, "sistema")
+        cfg.systems[key] = _build(key, body, cfg, seen, "systems")
+    raw_bios = data.get("bios")
+    if raw_bios is not None and not isinstance(raw_bios, dict):
+        raise RomsConfigError("roms.yaml: 'bios:' deve essere un elenco di gruppi con nome")
+    for key, body in (raw_bios or {}).items():
+        key = _check_key(key, "bios")
+        cfg.bios[key] = _build(key, body, cfg, seen, "bios")
+    for b in cfg.bios.values():
+        unknown = [k for k in b.only_for if k not in cfg.systems]
+        if unknown:
+            cfg.warnings.append(f"bios {b.key}: 'for' cita sistemi non definiti: {', '.join(unknown)}")
     return cfg
+
+
+def applicable_bios(bios: list[System], system_keys: set[str]) -> list[System]:
+    """I BIOS senza `for` servono sempre; gli altri solo se c'e' almeno uno dei loro sistemi."""
+    return [b for b in bios if not b.only_for or set(b.only_for) & system_keys]
 
 
 def expand_system(system: System, all_files: list[archive.ArchiveFile],
@@ -191,9 +233,12 @@ def _link_or_copy(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
-def stage_system(system: System, cache_dir: Path, stage_dir: Path) -> None:
-    """Mette i file scaricati di `system` in stage_dir/roms/<key>/."""
-    out = stage_dir / "roms" / system.key
+def stage_system(system: System, cache_dir: Path, stage_dir: Path, area: str = "roms") -> None:
+    """Mette i file scaricati di `system` in stage_dir/<area>/...
+
+    area "roms": stage/roms/<chiave>/;  area "bios": stage/bios/<dir>/ (dir puo' essere vuota)."""
+    sub = system.key if area == "roms" else system.dir
+    out = stage_dir / area / sub if sub else stage_dir / area
     out.mkdir(parents=True, exist_ok=True)
     for url in system.urls:
         src = cache_dir / system.key / filename_from_url(url)

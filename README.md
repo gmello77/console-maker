@@ -46,6 +46,12 @@ Invece di elencare ogni file puoi indicare un intero item di archive.org:
 
 Lo script legge l'elenco dei file da archive.org (con dimensioni). Con **Scegli i giochi** nella schermata apri l'elenco del sistema evidenziato, cerchi per nome e spunti solo quelli che vuoi: i file di uno stesso gioco (cue+bin, dischi multipli, m3u) restano insieme. La scelta va in `selections.yaml` (non tocca `roms.yaml`). Un item senza filtri né scelta scarica tutto, quindi controlla il totale mostrato.
 
+### BIOS
+Molti emulatori (PlayStation, Saturn, Neo Geo...) non partono senza BIOS. Nella sezione `bios:` di `roms.yaml` ogni gruppo ha `urls` o `item` come i sistemi, più `dir` (sottocartella di `userdata/bios`, vuota = direttamente in `bios/`) e `for` (i sistemi per cui servono). Un gruppo con `for` entra nell'immagine solo se almeno uno di quei sistemi c'è ancora dopo l'adattamento al disco; senza `for` entra sempre. I BIOS contano nello spazio e non vengono mai sfoltiti. L'opzione "Non includere i file BIOS" li esclude.
+
+### Barre di avanzamento
+Durante l'esecuzione la schermata mostra due barre: il **file in corso** (nome, byte, velocità, tempo stimato) e il **totale di ROM e BIOS** (file e GB completati, velocità e tempo stimato complessivi). Il totale si basa sulle dimensioni dichiarate da archive.org: se mancano, la barra conta i file. L'immagine Batocera ha solo la barra del file in corso, perché si scarica prima.
+
 ### Item ad accesso riservato (login archive.org)
 Alcuni item (collezioni "loggedin") rispondono 401 a chi non è collegato. Il pulsante **Login archive.org...** apre una finestra con email e password: la password va solo a archive.org e **non viene salvata**; si conserva la sessione in `~/.config/console-maker/archive_auth.json` (permessi 600, fuori dalla repo). I cookie di sessione vengono mandati solo ad archive.org e ai suoi server dei dati, in HTTPS, mai a Batocera né ad altri siti. **Disconnetti** cancella il file. In alternativa lo strumento usa le variabili `IA_LOGGED_IN_USER` / `IA_LOGGED_IN_SIG` oppure la configurazione di `ia` se c'è già. Un account non basta sempre: alcuni item si possono solo prendere in prestito, e in quel caso il download dà un 401 con un messaggio dedicato.
 

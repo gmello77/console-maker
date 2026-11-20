@@ -18,6 +18,14 @@
 #   cartella del sistema. Con `false` (default) il file resta cosi' com'e': va bene per
 #   gli zip di singole ROM e per MAME/FBNeo, che vogliono gli zip chiusi.
 #
+# - Sezione `bios:` (in fondo): i file BIOS che alcuni emulatori richiedono (PlayStation,
+#   Saturn, Neo Geo...). Stessa forma dei sistemi (`urls` oppure `item`, `extract`...), piu':
+#     dir:  sottocartella di userdata/bios (vuota = direttamente in bios/)
+#     for:  elenco dei sistemi per cui servono; il gruppo entra nell'immagine solo se
+#           almeno uno e' presente (se l'adattamento al disco li toglie tutti, non si
+#           scarica). Senza `for`, il gruppo entra sempre.
+#   I BIOS vengono contati nello spazio e non vengono mai sfoltiti.
+#
 # Rispetta il copyright: scarica solo quello che hai il diritto di usare.
 
 systems:
@@ -70,3 +78,17 @@ systems:
   #   extract: true
   #   urls:
   #     - https://archive.org/download/<identificativo>/<set completo>.zip
+
+# Esempio di BIOS (decommenta e metti i tuoi link):
+# bios:
+#   psx:
+#     name: BIOS PlayStation
+#     for: [psx]
+#     urls:
+#       - https://archive.org/download/<identificativo>/scph1001.bin
+#   dreamcast:
+#     name: BIOS Dreamcast
+#     dir: dc
+#     for: [dreamcast]
+#     urls:
+#       - https://archive.org/download/<identificativo>/dc_boot.bin

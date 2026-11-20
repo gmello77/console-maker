@@ -64,9 +64,14 @@ def fake_net(tmp_path, monkeypatch):
         z.writestr("Game A.nes", "AAA")
     arcade = tmp_path / "net" / "pacman.zip"
     arcade.write_bytes(b"PACZIP")
+    bios_psx = tmp_path / "net" / "scph1001.bin"
+    bios_psx.write_bytes(b"PSXBIOS")
+    bios_dc = tmp_path / "net" / "dc_boot.bin"
+    bios_dc.write_bytes(b"DCBIOS")
 
     def fake_download(url, dest, progress=None, retries=4, auth=None):
-        src = {IMG_NAME: base_gz, "nes-set.zip": set_zip, "pacman.zip": arcade}[dest.name]
+        src = {IMG_NAME: base_gz, "nes-set.zip": set_zip, "pacman.zip": arcade,
+               "scph1001.bin": bios_psx, "dc_boot.bin": bios_dc}[dest.name]
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(src, dest)
         return dest
@@ -154,3 +159,52 @@ def test_fit_nothing_fits_raises_before_downloading_roms(tmp_path, fake_net, mon
                               root=tmp_path / "root", fit_to_disk=True, sizes={url: 5_000_000_000}),
             lambda m: None, lambda *a: None)
     assert seen == [IMG_NAME]            # solo l'immagine base, nessuna ROM scaricata
+
+
+def _bios_groups():
+    psx = System("psx_bios", "PS1 BIOS", ("https://archive.org/download/b/scph1001.bin",),
+                 dir="psx", only_for=("nes",))
+    anyb = System("dc_bios", "DC BIOS", ("https://archive.org/download/b/dc_boot.bin",))
+    return [psx, anyb]
+
+
+def test_bios_land_in_userdata_bios_and_overall_progress_is_reported(tmp_path, fake_net):
+    systems = [System("nes", "NES", ("https://archive.org/download/x/nes-set.zip",), True),
+               System("mame", "MAME", ("https://archive.org/download/x/pacman.zip",), False)]
+    events, logs = [], []
+    final = pipeline.run(
+        pipeline.Settings(target_key="rg-sp", disk_gb=4, systems=systems, bios=_bios_groups(),
+                          root=tmp_path / "root"),
+        logs.append, lambda *a: None, lambda *e: events.append(e))
+    verify_share(final, {"roms/nes/Game A.nes": b"AAA", "roms/mame/pacman.zip": b"PACZIP",
+                         "bios/psx/scph1001.bin": b"PSXBIOS", "bios/dc_boot.bin": b"DCBIOS"})
+    assert events[0][0] == 0 and events[0][1] == 4           # parte da 0 file su 4
+    assert events[-1][:2] == (4, 4)                           # finisce 4 su 4
+    done = [e[0] for e in events]
+    assert done == sorted(done)                               # mai all'indietro
+    assert events[-1][2] == sum(len(x) for x in (b"PACZIP", b"PSXBIOS", b"DCBIOS")) + \
+        (tmp_path / "net" / "nes-set.zip").stat().st_size
+
+
+def test_bios_for_a_dropped_system_is_not_downloaded(tmp_path, fake_net, monkeypatch):
+    downloaded = []
+    inner = pipeline.download
+    monkeypatch.setattr(pipeline, "download",
+                        lambda url, dest, *a, **k: (downloaded.append(dest.name), inner(url, dest, *a, **k))[1])
+    nes_url = "https://archive.org/download/x/nes-set.zip"
+    mame_url = "https://archive.org/download/x/pacman.zip"
+    systems = [System("nes", "NES", (nes_url,), True, priority=1),
+               System("mame", "MAME", (mame_url,), False, priority=9)]
+    logs = []
+    final = pipeline.run(
+        pipeline.Settings(target_key="rg-sp", disk_gb=1, systems=systems, bios=_bios_groups(),
+                          root=tmp_path / "root", fit_to_disk=True,
+                          sizes={nes_url: 450_000_000, mame_url: 450_000_000,
+                                 "https://archive.org/download/b/scph1001.bin": 1000,
+                                 "https://archive.org/download/b/dc_boot.bin": 1000}),
+        logs.append, lambda *a: None)
+    assert "nes-set.zip" not in downloaded                   # tolto dall'adattamento
+    assert "scph1001.bin" not in downloaded                  # il suo BIOS dipendeva da nes
+    assert "dc_boot.bin" in downloaded                       # quello senza 'for' resta
+    assert any("BIOS non necessari" in m and "psx_bios" in m for m in logs)
+    verify_share(final, {"roms/mame/pacman.zip": b"PACZIP", "bios/dc_boot.bin": b"DCBIOS"})

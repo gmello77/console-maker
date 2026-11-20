@@ -15,13 +15,15 @@ from . import archive, auth, config, pipeline
 from .distro import TARGETS
 from .login_screen import LoginScreen
 from .picker import GamePicker
-from .roms import (RomsConfig, RomsConfigError, System, estimate_sizes, expand_system,
-                   load_roms)
+from .progress import Speedometer, describe, human_bytes, human_eta
+from .roms import (RomsConfig, RomsConfigError, System, applicable_bios, estimate_sizes,
+                   expand_system, load_roms)
 
 DISK_CHOICES = (16, 32, 64, 128, 256, 512)
 IMAGE_BASE_GB = 8.9   # boot 8 GB + margine SHARE: stima, il valore esatto lo legge la pipeline
 OPTIONS = (
     ("fit_disk", "Se non ci stanno, togli i giochi meno importanti (vedi priority)"),
+    ("skip_bios", "Non includere i file BIOS di roms.yaml"),
     ("verify_md5", "Verifica md5 dell'immagine Batocera"),
     ("keep_cache", "Tieni i download in cache (cache/)"),
     ("create_all_dirs", "Crea le cartelle vuote di tutti i sistemi di roms.yaml"),
@@ -33,15 +35,15 @@ class ConsoleMakerApp(App):
     SUB_TITLE = "immagini Batocera con ROM precaricate"
     BINDINGS = [("q", "quit", "Esci"), ("a", "toggle_all", "Tutti/nessun sistema")]
     CSS = """
-    #menu { height: auto; max-height: 60%; }
+    #menu { height: auto; max-height: 45%; }
     .col { width: 1fr; height: auto; padding: 0 1; }
     .col > Label { text-style: bold; margin-top: 1; }
     SelectionList { height: auto; max-height: 12; }
     #summary { padding: 0 2; height: auto; }
-    #bar { margin: 0 2; }
-    #barlabel { margin: 0 2; }
-    #log { height: 1fr; margin: 0 1; border: round $primary; }
-    #start { margin: 1 2; }
+    #bar, #overall { margin: 0 2; }
+    #barlabel, #overalllabel { margin: 0 2; }
+    #log { height: 1fr; min-height: 6; margin: 0 1; border: round $primary; }
+    #start { margin: 0 2; }
     """
 
     def __init__(self, root: Path | None = None) -> None:
@@ -59,6 +61,10 @@ class ConsoleMakerApp(App):
         self.running = False
         self._last_tick = 0.0
         self._last_label = ""
+        self._last_overall = 0.0
+        self.speedo = Speedometer()            # file in corso
+        self.overall_speedo = Speedometer()    # totale ROM + BIOS
+        self.bios_expanded: dict[str, System] = {}
 
     # ------------------------------------------------------------ layout
     def compose(self) -> ComposeResult:
@@ -89,6 +95,8 @@ class ConsoleMakerApp(App):
         yield Button("Avvia", id="start", variant="success", disabled=True)
         yield Label("", id="barlabel")
         yield ProgressBar(id="bar", total=100, show_eta=False)
+        yield Label("", id="overalllabel")
+        yield ProgressBar(id="overall", total=100, show_eta=False)
         yield RichLog(id="log", wrap=True, markup=False)
         yield Footer()
 
@@ -133,18 +141,31 @@ class ConsoleMakerApp(App):
                                          logged_in=self.auth is not None)
                 notes += [f"avviso: {w}" for w in warns]
             expanded[s.key] = s
-        urls = [u for s in expanded.values() for u in s.urls]
-        known = {u: sz for s in expanded.values() for u, sz in s.sizes.items()}
+        bios: dict[str, System] = {}
+        for b in self.roms.bios.values():
+            if b.item:
+                try:
+                    b, warns = expand_system(b, archive.list_files(b.item, cache),
+                                             logged_in=self.auth is not None)
+                    notes += [f"avviso: {w}" for w in warns]
+                except Exception as e:
+                    notes.append(f"ERRORE bios {b.key}: item {b.item}: {e}")
+            bios[b.key] = b
+        allsys = [*expanded.values(), *bios.values()]
+        urls = [u for s in allsys for u in s.urls]
+        known = {u: sz for s in allsys for u, sz in s.sizes.items()}
         sizes = {**estimate_sizes([u for u in urls if u not in known], auth=self.auth), **known}
-        self.call_from_thread(self._catalog_ready, expanded, item_files, sizes, notes)
+        self.call_from_thread(self._catalog_ready, expanded, item_files, sizes, notes, bios)
 
     def _catalog_ready(self, expanded: dict[str, System],
                        item_files: dict[str, list[archive.ArchiveFile]],
-                       sizes: dict[str, int | None], notes: list[str]) -> None:
+                       sizes: dict[str, int | None], notes: list[str],
+                       bios: dict[str, System] | None = None) -> None:
         log = self.query_one("#log", RichLog)
         for n in notes:
             log.write(n)
         self.expanded, self.item_files, self.sizes = expanded, item_files, sizes
+        self.bios_expanded = bios or {}
         sl = self.query_one("#systems", SelectionList)
         # al ricaricamento si mantiene la scelta corrente, alla prima volta quella salvata
         keep = set(sl.selected) if self.loaded else set(self.saved["systems"])
@@ -191,6 +212,11 @@ class ConsoleMakerApp(App):
             known = sum(self.sizes.get(u) or 0 for u in urls)
             unknown = sum(1 for u in urls if self.sizes.get(u) is None)
             txt = f"{len(chosen)} sistemi, {len(urls)} file"
+            bios_urls = [u for b in self.selected_bios() for u in b.urls]
+            if bios_urls:
+                bios_bytes = sum(self.sizes.get(u) or 0 for u in bios_urls)
+                known += bios_bytes
+                txt += f" + {len(bios_urls)} file BIOS ({human_bytes(bios_bytes)})"
             if not self.loaded:
                 txt += " · carico gli elenchi da archive.org..."
             else:
@@ -262,10 +288,25 @@ class ConsoleMakerApp(App):
             systems=[self.expanded[k] for k in keys],
             verify_md5="verify_md5" in opts, keep_cache="keep_cache" in opts,
             fit_to_disk="fit_disk" in opts, sizes=dict(self.sizes), auth=self.auth,
+            bios=[] if "skip_bios" in opts else list(self.bios_expanded.values()),
             create_all_dirs="create_all_dirs" in opts,
             all_system_keys=tuple(self.roms.systems), root=self.root)
+        self.reset_progress()
         self.set_running(True)
         self.run_pipeline(settings)
+
+    def selected_bios(self) -> list[System]:
+        """BIOS che finirebbero nell'immagine con la scelta attuale (come fa la pipeline)."""
+        if "skip_bios" in self.query_one("#options", SelectionList).selected:
+            return []
+        return applicable_bios(list(self.bios_expanded.values()), set(self._selected_systems()))
+
+    def reset_progress(self) -> None:
+        self.speedo, self.overall_speedo = Speedometer(), Speedometer()
+        for label in ("#barlabel", "#overalllabel"):
+            self.query_one(label, Label).update("")
+        for bar in ("#bar", "#overall"):
+            self.query_one(bar, ProgressBar).update(total=100, progress=0)
 
     def open_login(self) -> None:
         def done(changed: bool | None) -> None:
@@ -324,8 +365,15 @@ class ConsoleMakerApp(App):
             self._last_label, self._last_tick = label, now
             self.call_from_thread(self._show_progress, label, done, total)
 
+        def overall(fd: int, ft: int, bd: int, bt: int) -> None:
+            now = time.monotonic()
+            if fd < ft and now - self._last_overall < 0.2:
+                return
+            self._last_overall = now
+            self.call_from_thread(self._show_overall, fd, ft, bd, bt)
+
         try:
-            final = pipeline.run(settings, log, progress)
+            final = pipeline.run(settings, log, progress, overall)
         except Exception as e:  # mostrato all'utente, non nascosto
             log(f"ERRORE: {e}")
             self.call_from_thread(self.notify, str(e), title="Errore", severity="error")
@@ -337,10 +385,30 @@ class ConsoleMakerApp(App):
         finally:
             self.call_from_thread(self.set_running, False)
 
-    def _show_progress(self, label: str, done: int, total: int) -> None:
-        self.query_one("#barlabel", Label).update(label)
+    def _show_progress(self, label: str, done: int, total: int,
+                       now: float | None = None) -> None:
+        speed = self.speedo.update(label, done, time.monotonic() if now is None else now)
+        self.query_one("#barlabel", Label).update(
+            describe(label, done, total, speed, self.speedo.eta(done, total)))
         bar = self.query_one("#bar", ProgressBar)
         if total > 0:
             bar.update(total=total, progress=done)
         else:
             bar.update(total=None)
+
+    def _show_overall(self, files_done: int, files_total: int, bytes_done: int,
+                      bytes_total: int, now: float | None = None) -> None:
+        text = f"Totale ROM e BIOS: {files_done}/{files_total} file"
+        bar = self.query_one("#overall", ProgressBar)
+        if bytes_total > 0:
+            bytes_done = min(bytes_done, bytes_total)     # le stime possono sbagliare di poco
+            speed = self.overall_speedo.update(
+                "overall", bytes_done, time.monotonic() if now is None else now)
+            text += f"  ·  {human_bytes(bytes_done)} / {human_bytes(bytes_total)}"
+            if speed > 0:
+                text += (f"  ·  {human_bytes(speed)}/s  ·  ancora "
+                         f"{human_eta(self.overall_speedo.eta(bytes_done, bytes_total))}")
+            bar.update(total=bytes_total, progress=bytes_done)
+        elif files_total > 0:                              # dimensioni ignote: si contano i file
+            bar.update(total=files_total, progress=files_done)
+        self.query_one("#overalllabel", Label).update(text)

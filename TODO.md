@@ -6,6 +6,8 @@ Stato al 2026-11-20. Le voci sono in ordine di lavoro. Convenzioni: `[x]` fatto 
 - [x] v1: schermata Textual, ultima immagine Batocera dal mirror, download con ripresa, md5, ROM da `roms.yaml`, scrittura nella SHARE via Docker. Provata con una pipeline reale per l'RG SP (immagine da 9,1 GB, ROM verificata con SHA-256).
 - [x] Punto 1: `item:` di archive.org con `include`/`exclude`/`files`, finestra "Scegli i giochi" (ricerca, file multi-disco raggruppati), scelta salvata in `selections.yaml`. Provato su archive.org vero solo per elenco file e URL.
 - [x] Punto 2: adattamento automatico al disco (`priority` per sistema, opzione attiva di default, dimensione esatta letta dall'MBR dell'immagine compressa).
+- [x] Punto 3, BIOS: sezione `bios:` in `roms.yaml` (`urls`/`item`, `dir`, `for`), in `userdata/bios`; contati nello spazio, mai sfoltiti, esclusi se i loro sistemi non ci sono. Provato con Docker vero. Non provato: BIOS reali su un dispositivo.
+- [x] Due barre di avanzamento (file in corso e totale ROM+BIOS) con velocità e tempo stimato.
 - [x] Download: stop immediato su 401/403/404/410 con messaggio chiaro, avviso se un item è ad accesso riservato.
 
 ## In corso
@@ -16,7 +18,6 @@ Stato al 2026-11-20. Le voci sono in ordine di lavoro. Convenzioni: `[x]` fatto 
   - **Non verificato con un account vero:** il login riuscito (il formato della risposta è quello letto nel codice di `ia`, provato solo con credenziali false) e che i cookie arrivino al server dei dati dopo il redirect. Serve un account vero: provare con `htgdb-gamepacks`. Se un account gratuito non basta, il 401 col login ora dà un messaggio dedicato.
 
 ## Prossimi punti (priorità alta)
-- [ ] **File BIOS**: sezione `bios:` in `roms.yaml` con URL e destinazione in `/userdata/bios/` (PlayStation, Saturn, Neo Geo...). File: `cm/roms.py`, `cm/pipeline.py`.
 - [ ] **Preconfigurazione Batocera**: `device.yaml` con lingua, fuso orario, Wi-Fi, credenziali ScreenScraper, scritti in `userdata/system/batocera.conf` dentro la SHARE, così lo scraper integrato parte senza configurare il dispositivo. File: `builder/build_image.sh`.
 - [ ] **Verifica checksum delle ROM** con gli md5 di archive.org (già letti in `ArchiveFile.md5`, oggi non usati): ricontrollo dopo il download e riscarico se non corrispondono. File: `cm/download.py`.
 - [ ] **Controllo spazio sul Mac** prima di partire (cache + stage + immagine, 9 GB e più).
@@ -28,7 +29,7 @@ Stato al 2026-11-20. Le voci sono in ordine di lavoro. Convenzioni: `[x]` fatto 
 ## Qualità e robustezza
 - [ ] Scelta del canale e della versione (stable o release candidate; oggi l'RG SP usa la RC senza chiedere).
 - [ ] Immagine finale compressa (`.img.xz` o `.zip`, che Etcher legge).
-- [ ] Download in parallelo, velocità ed ETA nella schermata.
+- [ ] Download in parallelo (velocità ed ETA nella schermata sono già fatti).
 - [ ] Aggiungere ROM a un'immagine o a una SD già pronta, senza rifare tutto.
 - [ ] Filtri per regione (EU/USA/JP) e per demo/beta/proto.
 - [ ] Priorità per singolo gioco, non solo per sistema (oggi dentro un sistema vale l'ordine alfabetico).

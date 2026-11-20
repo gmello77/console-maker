@@ -215,3 +215,61 @@ async def test_login_failure_keeps_dialog_open_with_clear_message(tmp_path, monk
         assert isinstance(app.screen, LoginScreen)
         assert "password errata" in str(scr.query_one("#msg", Label).render())
         assert scr.query_one("#password", Input).value == ""            # svuotata subito
+
+
+# ---------------------------------------------------------------- BIOS e barre di avanzamento
+ROMS_BIOS = ROMS + """
+bios:
+  psx_bios:
+    name: PS1 BIOS
+    for: [psx]
+    urls: [https://archive.org/download/b/scph1001.bin]
+  generic:
+    urls: [https://archive.org/download/b/extra.bin]
+"""
+
+
+async def test_summary_counts_bios_and_skip_option(tmp_path):
+    (tmp_path / "roms.yaml").write_text(ROMS_BIOS)
+    app = ConsoleMakerApp(root=tmp_path)
+    async with app.run_test(size=(140, 50)) as pilot:
+        await boot(app, pilot)
+        assert {b.key for b in app.selected_bios()} == {"psx_bios", "generic"}
+        assert "+ 2 file BIOS" in str(app.query_one("#summary").render())
+        # senza il sistema collegato resta solo il BIOS senza 'for'
+        sl = app.query_one("#systems", SelectionList)
+        sl.deselect("psx")
+        await pilot.pause()
+        assert [b.key for b in app.selected_bios()] == ["generic"]
+        assert "+ 1 file BIOS" in str(app.query_one("#summary").render())
+        app.query_one("#options", SelectionList).select("skip_bios")
+        await pilot.pause()
+        assert app.selected_bios() == []
+        assert "BIOS" not in str(app.query_one("#summary").render())
+
+
+async def test_two_progress_bars_show_file_speed_and_total(tmp_path, monkeypatch):
+    from textual.widgets import Label, ProgressBar
+    (tmp_path / "roms.yaml").write_text(ROMS)
+    app = ConsoleMakerApp(root=tmp_path)
+    async with app.run_test(size=(140, 50)) as pilot:
+        await boot(app, pilot)
+        app._show_progress("ROM nes: Game.zip", 0, 100_000_000, now=0.0)
+        app._show_progress("ROM nes: Game.zip", 20_000_000, 100_000_000, now=1.0)
+        txt = str(app.query_one("#barlabel", Label).render())
+        assert "ROM nes: Game.zip" in txt and "20.0 MB / 100.0 MB" in txt
+        assert "20.0 MB/s" in txt and "ancora 4s" in txt
+        assert app.query_one("#bar", ProgressBar).progress == 20_000_000
+        app._show_overall(1, 4, 0, 400_000_000, now=0.0)
+        app._show_overall(2, 4, 100_000_000, 400_000_000, now=1.0)
+        txt = str(app.query_one("#overalllabel", Label).render())
+        assert "2/4 file" in txt and "100.0 MB / 400.0 MB" in txt and "ancora" in txt
+        bar = app.query_one("#overall", ProgressBar)
+        assert (bar.progress, bar.total) == (100_000_000, 400_000_000)
+        app._show_overall(4, 4, 450_000_000, 400_000_000, now=2.0)   # stima sbagliata: non oltre il 100%
+        assert bar.progress == 400_000_000
+        app._show_overall(1, 3, 0, 0, now=3.0)                       # dimensioni ignote: si contano i file
+        assert (bar.progress, bar.total) == (1, 3)
+        app.reset_progress()
+        assert str(app.query_one("#overalllabel", Label).render()) == ""
+        assert app.query_one("#bar", ProgressBar).progress == 0
