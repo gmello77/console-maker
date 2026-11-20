@@ -65,7 +65,7 @@ def fake_net(tmp_path, monkeypatch):
     arcade = tmp_path / "net" / "pacman.zip"
     arcade.write_bytes(b"PACZIP")
 
-    def fake_download(url, dest, progress=None, retries=4):
+    def fake_download(url, dest, progress=None, retries=4, auth=None):
         src = {IMG_NAME: base_gz, "nes-set.zip": set_zip, "pacman.zip": arcade}[dest.name]
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(src, dest)
@@ -107,3 +107,50 @@ def test_bad_md5_discards_download(tmp_path, fake_net, monkeypatch):
     with pytest.raises(pipeline.PipelineError, match="md5"):
         pipeline.run(settings(tmp_path), lambda m: None, lambda *a: None)
     assert not (tmp_path / "root" / "cache" / "base" / IMG_NAME).exists()
+
+
+def test_fit_to_disk_drops_least_important_before_downloading(tmp_path, fake_net, monkeypatch):
+    """Dimensioni dichiarate enormi: il disco da 1 GB non basta per entrambi i sistemi."""
+    downloaded = []
+    inner = pipeline.download
+    monkeypatch.setattr(pipeline, "download",
+                        lambda url, dest, *a, **k: (downloaded.append(dest.name), inner(url, dest, *a, **k))[1])
+    nes_url = "https://archive.org/download/x/nes-set.zip"
+    mame_url = "https://archive.org/download/x/pacman.zip"
+    systems = [System("nes", "NES", (nes_url,), True, priority=1),
+               System("mame", "MAME", (mame_url,), False, priority=9)]   # mame piu' importante
+    logs = []
+    final = pipeline.run(
+        pipeline.Settings(target_key="rg-sp", disk_gb=1, systems=systems, root=tmp_path / "root",
+                          fit_to_disk=True, sizes={nes_url: 300_000_000, mame_url: 300_000_000}),
+        logs.append, lambda *a: None)
+    # budget ~ (0.97 GB - 34.6 MB - 256 MiB)/1.03 ~ 650 MB: entrambi (600 MB) ci stanno
+    assert "pacman.zip" in downloaded and "nes-set.zip" in downloaded
+    assert not any("tolti" in m for m in logs)
+    verify_share(final, {"roms/nes/Game A.nes": b"AAA", "roms/mame/pacman.zip": b"PACZIP"})
+
+    # stesso caso con 450 MB a testa: ne entra uno solo, quello con priorita' piu' alta
+    downloaded.clear()
+    logs.clear()
+    final = pipeline.run(
+        pipeline.Settings(target_key="rg-sp", disk_gb=1, systems=systems, root=tmp_path / "root2",
+                          fit_to_disk=True, sizes={nes_url: 450_000_000, mame_url: 450_000_000}),
+        logs.append, lambda *a: None)
+    assert "nes-set.zip" not in downloaded and "pacman.zip" in downloaded
+    assert any("[nes] tolti 1 giochi" in m for m in logs)
+    verify_share(final, {"roms/mame/pacman.zip": b"PACZIP"})
+
+
+def test_fit_nothing_fits_raises_before_downloading_roms(tmp_path, fake_net, monkeypatch):
+    seen = []
+    inner = pipeline.download
+    monkeypatch.setattr(pipeline, "download",
+                        lambda url, dest, *a, **k: (seen.append(dest.name), inner(url, dest, *a, **k))[1])
+    url = "https://archive.org/download/x/pacman.zip"
+    with pytest.raises(pipeline.PipelineError, match="nemmeno un gioco"):
+        pipeline.run(
+            pipeline.Settings(target_key="rg-sp", disk_gb=1,
+                              systems=[System("mame", "MAME", (url,), False)],
+                              root=tmp_path / "root", fit_to_disk=True, sizes={url: 5_000_000_000}),
+            lambda m: None, lambda *a: None)
+    assert seen == [IMG_NAME]            # solo l'immagine base, nessuna ROM scaricata

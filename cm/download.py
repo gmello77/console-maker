@@ -12,9 +12,21 @@ from urllib.parse import unquote, urlparse
 import requests
 
 from . import USER_AGENT
+from .auth import ArchiveAuth, apply as apply_auth
 
 Progress = Callable[[int, int], None]  # (fatti, totale) in byte; totale 0 = ignoto
 CHUNK = 1024 * 1024
+# Risposte che non cambiano riprovando: inutile aspettare e ritentare.
+FATAL_STATUS = {
+    401: "accesso negato (401): l'item e' ad accesso riservato e richiede il login di archive.org",
+    403: "accesso vietato (403): il file non e' scaricabile senza autorizzazione",
+    404: "file non trovato (404): controlla il link o il nome del file",
+    410: "file rimosso (410)",
+}
+
+
+class DownloadError(RuntimeError):
+    pass
 
 
 def filename_from_url(url: str) -> str:
@@ -24,14 +36,15 @@ def filename_from_url(url: str) -> str:
     return name
 
 
-def _session() -> requests.Session:
+def _session(auth: ArchiveAuth | None = None) -> requests.Session:
     s = requests.Session()
     s.headers["User-Agent"] = USER_AGENT
-    return s
+    return apply_auth(s, auth)
 
 
-def remote_size(url: str, session: requests.Session | None = None) -> int | None:
-    s = session or _session()
+def remote_size(url: str, session: requests.Session | None = None,
+                auth: ArchiveAuth | None = None) -> int | None:
+    s = session or _session(auth)
     try:
         r = s.head(url, allow_redirects=True, timeout=30)
         if r.status_code == 200 and "content-length" in r.headers:
@@ -42,10 +55,12 @@ def remote_size(url: str, session: requests.Session | None = None) -> int | None
 
 
 def download(url: str, dest: Path, progress: Progress | None = None,
-             retries: int = 4) -> Path:
-    """Scarica `url` in `dest`; riprende da `dest.part` se esiste."""
+             retries: int = 4, auth: ArchiveAuth | None = None) -> Path:
+    """Scarica `url` in `dest`; riprende da `dest.part` se esiste.
+
+    `auth` (login archive.org) vale solo per archive.org e i suoi sottodomini."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    s = _session()
+    s = _session(auth)
     expected = remote_size(url, s)
     if dest.exists() and expected is not None and dest.stat().st_size == expected:
         if progress:
@@ -73,11 +88,21 @@ def download(url: str, dest: Path, progress: Progress | None = None,
                         if progress:
                             progress(done, total)
             break
+        except requests.HTTPError as e:
+            status = e.response.status_code if e.response is not None else None
+            if status == 401 and auth:
+                raise DownloadError(
+                    "accesso negato (401) anche con il tuo login: l'account non ha i permessi "
+                    f"per questo item (alcuni si possono solo prendere in prestito): {url}") from e
+            if status in FATAL_STATUS:
+                raise DownloadError(f"{FATAL_STATUS[status]}: {url}") from e
+            last_err = e
+            time.sleep(2 ** attempt)
         except (requests.RequestException, OSError) as e:
             last_err = e
             time.sleep(2 ** attempt)
     else:
-        raise RuntimeError(f"download fallito dopo {retries} tentativi: {url}: {last_err}")
+        raise DownloadError(f"download fallito dopo {retries} tentativi: {url}: {last_err}")
 
     os.replace(part, dest)
     return dest

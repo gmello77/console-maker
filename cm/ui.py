@@ -11,12 +11,17 @@ from textual.widgets import (Button, Footer, Header, Input, Label, ProgressBar,
                              RadioButton, RadioSet, RichLog, SelectionList, Static)
 from textual.widgets.selection_list import Selection
 
-from . import config, pipeline
+from . import archive, auth, config, pipeline
 from .distro import TARGETS
-from .roms import RomsConfig, RomsConfigError, estimate_sizes, load_roms
+from .login_screen import LoginScreen
+from .picker import GamePicker
+from .roms import (RomsConfig, RomsConfigError, System, estimate_sizes, expand_system,
+                   load_roms)
 
 DISK_CHOICES = (16, 32, 64, 128, 256, 512)
+IMAGE_BASE_GB = 8.9   # boot 8 GB + margine SHARE: stima, il valore esatto lo legge la pipeline
 OPTIONS = (
+    ("fit_disk", "Se non ci stanno, togli i giochi meno importanti (vedi priority)"),
     ("verify_md5", "Verifica md5 dell'immagine Batocera"),
     ("keep_cache", "Tieni i download in cache (cache/)"),
     ("create_all_dirs", "Crea le cartelle vuote di tutti i sistemi di roms.yaml"),
@@ -45,7 +50,12 @@ class ConsoleMakerApp(App):
         self.cfg_path = self.root / "config.yaml"
         self.saved = config.load(self.cfg_path)
         self.roms: RomsConfig | None = None
+        self.selections = config.load_selections(self.root / "selections.yaml")
+        self.expanded: dict[str, System] = {}      # sistemi con gli item gia' risolti in URL
+        self.item_files: dict[str, list[archive.ArchiveFile]] = {}
         self.sizes: dict[str, int | None] = {}
+        self.loaded = False
+        self.auth = auth.load_auth()
         self.running = False
         self._last_tick = 0.0
         self._last_label = ""
@@ -68,39 +78,90 @@ class ConsoleMakerApp(App):
             with VerticalScroll(classes="col"):
                 yield Label("Console / emulatori  (spazio = scegli, a = tutti)")
                 yield SelectionList(id="systems")
+                yield Button("Scegli i giochi del sistema evidenziato...", id="pick")
+                yield Label("archive.org")
+                yield Static(id="authstatus")
+                yield Button("Login archive.org...", id="open_login")
                 yield Label("Opzioni")
                 yield SelectionList(*[Selection(text, key, key in self.saved["options"])
                                       for key, text in OPTIONS], id="options")
         yield Static(id="summary")
-        yield Button("Avvia", id="start", variant="success")
+        yield Button("Avvia", id="start", variant="success", disabled=True)
         yield Label("", id="barlabel")
         yield ProgressBar(id="bar", total=100, show_eta=False)
         yield RichLog(id="log", wrap=True, markup=False)
         yield Footer()
 
+    def show_auth_status(self) -> None:
+        self.query_one("#authstatus", Static).update(
+            "collegato: gli item riservati sono accessibili" if self.auth
+            else "non collegato: gli item ad accesso riservato non si scaricano")
+
     def on_mount(self) -> None:
+        self.show_auth_status()
         log = self.query_one("#log", RichLog)
         try:
             self.roms = load_roms(self.root / "roms.yaml")
         except RomsConfigError as e:
             log.write(f"ERRORE: {e}")
-            self.query_one("#start", Button).disabled = True
             self.refresh_summary()
             return
         for w in self.roms.warnings:
             log.write(f"avviso: {w}")
-        wanted = set(self.saved["systems"])
-        sl = self.query_one("#systems", SelectionList)
+        self.refresh_summary()
+        self.load_catalog()
+
+    @work(thread=True, exclusive=True, group="catalog")
+    def load_catalog(self) -> None:
+        """Risolve gli `item:` in elenchi di file e calcola le dimensioni (rete)."""
+        assert self.roms
+        cache = self.root / "cache" / "meta"
+        expanded: dict[str, System] = {}
+        item_files: dict[str, list[archive.ArchiveFile]] = {}
+        notes: list[str] = []
         for s in self.roms.systems.values():
+            if s.item:
+                try:
+                    allf = archive.list_files(s.item, cache)
+                except Exception as e:  # rete, item inesistente...: lo si dice, non si nasconde
+                    notes.append(f"ERRORE {s.key}: item {s.item}: {e}")
+                    expanded[s.key] = s
+                    continue
+                item_files[s.key] = archive.select_files(
+                    allf, include=s.include, exclude=s.exclude)
+                s, warns = expand_system(s, allf, self.selections.get(s.key),
+                                         logged_in=self.auth is not None)
+                notes += [f"avviso: {w}" for w in warns]
+            expanded[s.key] = s
+        urls = [u for s in expanded.values() for u in s.urls]
+        known = {u: sz for s in expanded.values() for u, sz in s.sizes.items()}
+        sizes = {**estimate_sizes([u for u in urls if u not in known], auth=self.auth), **known}
+        self.call_from_thread(self._catalog_ready, expanded, item_files, sizes, notes)
+
+    def _catalog_ready(self, expanded: dict[str, System],
+                       item_files: dict[str, list[archive.ArchiveFile]],
+                       sizes: dict[str, int | None], notes: list[str]) -> None:
+        log = self.query_one("#log", RichLog)
+        for n in notes:
+            log.write(n)
+        self.expanded, self.item_files, self.sizes = expanded, item_files, sizes
+        sl = self.query_one("#systems", SelectionList)
+        # al ricaricamento si mantiene la scelta corrente, alla prima volta quella salvata
+        keep = set(sl.selected) if self.loaded else set(self.saved["systems"])
+        sl.clear_options()
+        for s in expanded.values():
             if not s.urls:
                 continue
-            sl.add_option(Selection(f"{s.name}  ({len(s.urls)} file)", s.key,
-                                    not wanted or s.key in wanted))
+            total = sum(sizes.get(u) or 0 for u in s.urls)
+            unknown = any(sizes.get(u) is None for u in s.urls)
+            label = f"{s.name}  ({len(s.urls)} file"
+            label += f", {total / 1e9:.1f} GB+)" if unknown else f", {total / 1e9:.1f} GB)"
+            sl.add_option(Selection(label, s.key, not keep or s.key in keep))
+        self.loaded = True
         if sl.option_count == 0:
-            log.write("roms.yaml non contiene nessun link: compila le liste 'urls'.")
-            self.query_one("#start", Button).disabled = True
+            log.write("roms.yaml non contiene nessun link: compila 'urls' o 'item'.")
+        self.query_one("#start", Button).disabled = sl.option_count == 0 or self.running
         self.refresh_summary()
-        self.load_sizes()
 
     # ------------------------------------------------------------ stato
     def _disk_gb(self) -> float | None:
@@ -125,14 +186,13 @@ class ConsoleMakerApp(App):
         lines = []
         disk = self._disk_gb()
         if self.roms:
-            chosen = [self.roms.systems[k] for k in self._selected_systems()]
+            chosen = [self.expanded[k] for k in self._selected_systems() if k in self.expanded]
             urls = [u for s in chosen for u in s.urls]
             known = sum(self.sizes.get(u) or 0 for u in urls)
             unknown = sum(1 for u in urls if self.sizes.get(u) is None)
-            pending = len(self.sizes) == 0
             txt = f"{len(chosen)} sistemi, {len(urls)} file"
-            if pending:
-                txt += " · calcolo le dimensioni..."
+            if not self.loaded:
+                txt += " · carico gli elenchi da archive.org..."
             else:
                 txt += f" · ROM scaricate circa {known / 1e9:.1f} GB"
                 if unknown:
@@ -142,20 +202,19 @@ class ConsoleMakerApp(App):
                 usable = pipeline.disk_capacity_bytes(disk) / 1e9
                 lines.append(f"Disco {disk:g} GB (utilizzabili circa {usable:.1f} GB): "
                              "l'immagine Batocera da sola occupa circa 8,5 GB.")
+                room = usable - IMAGE_BASE_GB
+                if self.loaded and known / 1e9 > room:
+                    if "fit_disk" in self.query_one("#options", SelectionList).selected:
+                        lines.append(f"Non ci sta (ROM {known / 1e9:.1f} GB, spazio circa "
+                                     f"{max(room, 0):.1f} GB): all'avvio verranno tolti i giochi "
+                                     "meno importanti.")
+                    else:
+                        lines.append(f"ATTENZIONE: non ci sta (ROM {known / 1e9:.1f} GB, spazio "
+                                     f"circa {max(room, 0):.1f} GB). Riduci la selezione o attiva "
+                                     "l'adattamento automatico.")
         else:
             lines.append("Nessun roms.yaml valido.")
         self.query_one("#summary", Static).update("\n".join(lines))
-
-    @work(thread=True)
-    def load_sizes(self) -> None:
-        assert self.roms
-        urls = [u for s in self.roms.systems.values() for u in s.urls]
-        sizes = estimate_sizes(urls)
-        self.call_from_thread(self._set_sizes, sizes)
-
-    def _set_sizes(self, sizes: dict[str, int | None]) -> None:
-        self.sizes = sizes
-        self.refresh_summary()
 
     # ------------------------------------------------------------ eventi
     def on_radio_set_changed(self, _: RadioSet.Changed) -> None:
@@ -175,7 +234,15 @@ class ConsoleMakerApp(App):
             sl.select_all()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id != "start" or self.running:
+        if self.running:
+            return
+        if event.button.id == "pick":
+            self.open_picker()
+            return
+        if event.button.id == "open_login":
+            self.open_login()
+            return
+        if event.button.id != "start":
             return
         disk = self._disk_gb()
         keys = self._selected_systems()
@@ -192,17 +259,56 @@ class ConsoleMakerApp(App):
                                     "systems": keys, "options": opts})
         settings = pipeline.Settings(
             target_key=self._device_key(), disk_gb=disk,
-            systems=[self.roms.systems[k] for k in keys],
+            systems=[self.expanded[k] for k in keys],
             verify_md5="verify_md5" in opts, keep_cache="keep_cache" in opts,
+            fit_to_disk="fit_disk" in opts, sizes=dict(self.sizes), auth=self.auth,
             create_all_dirs="create_all_dirs" in opts,
             all_system_keys=tuple(self.roms.systems), root=self.root)
         self.set_running(True)
         self.run_pipeline(settings)
 
+    def open_login(self) -> None:
+        def done(changed: bool | None) -> None:
+            if not changed:
+                return
+            self.auth = auth.load_auth()
+            self.show_auth_status()
+            self.query_one("#log", RichLog).write(
+                "Login archive.org eseguito." if self.auth else "Disconnesso da archive.org.")
+            if self.roms:
+                self.load_catalog()     # riesamina dimensioni e avvisi con il nuovo stato
+
+        self.push_screen(LoginScreen(self.auth is not None), done)
+
+    def open_picker(self) -> None:
+        sl = self.query_one("#systems", SelectionList)
+        idx = sl.highlighted
+        if idx is None:
+            self.notify("Evidenzia prima un sistema nella lista.", severity="warning")
+            return
+        key = sl.get_option_at_index(idx).value
+        if key not in self.item_files:
+            self.notify("Questo sistema non usa 'item:' in roms.yaml: i suoi file sono "
+                        "gia' elencati uno per uno.", severity="warning")
+            return
+        system = self.roms.systems[key]  # type: ignore[union-attr]
+        games = archive.group_games(self.item_files[key])
+        current = self.selections.get(key, list(system.files) if system.files is not None else None)
+
+        def done(names: list[str] | None) -> None:
+            if names is None:
+                return
+            self.selections[key] = names
+            config.save_selections(self.root / "selections.yaml", self.selections)
+            self.query_one("#log", RichLog).write(f"{system.name}: {len(names)} file scelti")
+            self.load_catalog()
+
+        self.push_screen(GamePicker(system.name, games, current), done)
+
     def set_running(self, value: bool) -> None:
         self.running = value
         self.query_one("#start", Button).disabled = value
-        for w in ("#device", "#disk", "#disk_other", "#systems", "#options"):
+        for w in ("#device", "#disk", "#disk_other", "#systems", "#options", "#pick", "#open_login"):
             self.query_one(w).disabled = value
 
     # ------------------------------------------------------------ esecuzione

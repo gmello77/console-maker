@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Mapping
 from urllib.parse import urlparse
 
 import yaml
 
+from . import archive
 from .download import filename_from_url, remote_size
 
 # Nomi cartella Batocera piu' comuni. Una chiave fuori lista NON e' un errore:
@@ -34,8 +37,18 @@ class RomsConfigError(Exception):
 class System:
     key: str
     name: str
-    urls: tuple[str, ...]
+    urls: tuple[str, ...] = ()
     extract: bool = False
+    item: str | None = None                   # item archive.org: tutti i suoi file
+    files: tuple[str, ...] | None = None      # solo questi file dell'item
+    include: str | None = None                # regex sul nome file
+    exclude: str | None = None
+    sizes: Mapping[str, int] = field(default_factory=dict, compare=False)  # url -> byte noti
+    priority: int = 0                         # piu' alta = tenuto per primo se manca spazio
+
+    @property
+    def has_links(self) -> bool:
+        return bool(self.urls or self.item)
 
 
 @dataclass
@@ -71,6 +84,27 @@ def parse_roms(data: object) -> RomsConfig:
         urls = body.get("urls") or []
         if not isinstance(urls, list) or not all(isinstance(u, str) for u in urls):
             raise RomsConfigError(f"sistema {key}: 'urls' deve essere una lista di stringhe")
+        item = body.get("item")
+        if item is not None and (not isinstance(item, str) or not archive.ITEM_RE.match(item)):
+            raise RomsConfigError(f"sistema {key}: 'item' non e' un identificativo archive.org: {item!r}")
+        files = body.get("files")
+        if files is not None and (not isinstance(files, list)
+                                  or not all(isinstance(f, str) for f in files)):
+            raise RomsConfigError(f"sistema {key}: 'files' deve essere una lista di nomi file")
+        priority = body.get("priority", 0)
+        if isinstance(priority, bool) or not isinstance(priority, int):
+            raise RomsConfigError(f"sistema {key}: 'priority' deve essere un numero intero")
+        rx = {}
+        for opt in ("include", "exclude"):
+            val = body.get(opt)
+            if val is not None:
+                try:
+                    re.compile(str(val))
+                except re.error as e:
+                    raise RomsConfigError(f"sistema {key}: '{opt}' non e' una regex valida: {e}")
+                rx[opt] = str(val)
+        if (files is not None or rx) and not item:
+            cfg.warnings.append(f"{key}: 'files'/'include'/'exclude' valgono solo con 'item'")
         if key not in KNOWN_SYSTEMS:
             cfg.warnings.append(f"{key}: sistema non nella lista nota, controlla il nome cartella")
         clean = []
@@ -91,13 +125,48 @@ def parse_roms(data: object) -> RomsConfig:
             name=str(body.get("name") or key),
             urls=tuple(clean),
             extract=bool(body.get("extract", False)),
+            item=item,
+            files=tuple(files) if files is not None else None,
+            include=rx.get("include"),
+            exclude=rx.get("exclude"),
+            priority=priority,
         )
     return cfg
 
 
-def estimate_sizes(urls: list[str], workers: int = 8) -> dict[str, int | None]:
+def expand_system(system: System, all_files: list[archive.ArchiveFile],
+                  selection: list[str] | None = None,
+                  logged_in: bool = False) -> tuple[System, list[str]]:
+    """Trasforma `item:` in URL concreti. `selection` (dalla schermata di scelta) batte
+    `files:` di roms.yaml, che batte include/exclude. Ritorna (sistema, avvisi)."""
+    if not system.item:
+        return system, []
+    names = selection if selection is not None else system.files
+    warnings = []
+    if names is not None:
+        missing = sorted(set(names) - {f.name for f in all_files})
+        if missing:
+            warnings.append(f"{system.key}: {len(missing)} file scelti non sono piu' nell'item "
+                            f"{system.item} (es. {missing[0]})")
+    chosen = archive.select_files(all_files, names=names, include=system.include,
+                                  exclude=system.exclude)
+    locked = [f for f in chosen if f.private]
+    if locked and logged_in:
+        warnings.append(
+            f"{system.key}: {len(locked)} file dell'item {system.item} sono ad accesso riservato: "
+            "uso il tuo login archive.org (se l'account non ha i permessi, il download fallira')")
+    elif locked:
+        warnings.append(
+            f"{system.key}: {len(locked)} file dell'item {system.item} sono ad accesso riservato "
+            "(serve il login di archive.org): il loro download fallira' con errore 401")
+    new = {archive.file_url(system.item, f.name): f.size for f in chosen}
+    urls = tuple(dict.fromkeys(system.urls + tuple(new)))
+    return replace(system, urls=urls, sizes={**system.sizes, **new}), warnings
+
+
+def estimate_sizes(urls: list[str], workers: int = 8, auth=None) -> dict[str, int | None]:
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        return dict(zip(urls, ex.map(remote_size, urls)))
+        return dict(zip(urls, ex.map(lambda u: remote_size(u, auth=auth), urls)))
 
 
 # ---------------------------------------------------------------- staging

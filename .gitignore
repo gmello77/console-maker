@@ -10,3 +10,4 @@ config.yaml
 *.img.gz
 *.part
 .DS_Store
+selections.yaml

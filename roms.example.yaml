@@ -3,7 +3,17 @@
 # - La chiave (nes, snes, mame...) e' il nome della cartella Batocera in /userdata/roms.
 # - `urls`: link diretti ai file su archive.org
 #     https://archive.org/download/<identificativo>/<nome file>.zip
-#   I sistemi con `urls` vuota non compaiono nel menu.
+#   I sistemi senza `urls` né `item` non compaiono nel menu.
+# - `item`: al posto dei singoli link, l'identificativo di un item archive.org
+#     (la parte dopo archive.org/details/). Lo script legge l'elenco dei file da solo.
+#     Opzioni, tutte facoltative: `include` / `exclude` (regex sul nome file, senza
+#     maiuscole) e `files` (elenco esatto dei nomi da scaricare). Nella schermata il
+#     pulsante "Scegli i giochi" salva la scelta in selections.yaml e batte `files`.
+#     Con un item senza filtri si scarica TUTTO: controlla il totale nella schermata.
+# - `priority`: numero intero (default 0). Se le ROM scelte non ci stanno nel disco, i
+#     sistemi con priority piu' alta si riempiono per primi; a parita', l'ordine di questo
+#     file. Dentro un sistema si tengono i giochi in ordine alfabetico finche' c'e' posto
+#     (un gioco con piu' file, cue+bin o dischi multipli, entra tutto o niente).
 # - `extract: true`: lo zip contiene molte ROM (un set completo) e va scompattato nella
 #   cartella del sistema. Con `false` (default) il file resta cosi' com'e': va bene per
 #   gli zip di singole ROM e per MAME/FBNeo, che vogliono gli zip chiusi.
@@ -47,6 +57,13 @@ systems:
   fbneo:
     name: Arcade (FinalBurn Neo)
     urls: []
+  # Esempio con un item intero filtrato (poi si sfoltisce dalla schermata):
+  # psx:
+  #   name: PlayStation
+  #   item: <identificativo>
+  #   include: '\.chd$'
+  #   exclude: '\((Demo|Beta|Proto)'
+  #
   # Esempio con un set da scompattare:
   # atari2600:
   #   name: Atari 2600

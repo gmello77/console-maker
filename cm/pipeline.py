@@ -1,16 +1,19 @@
 """Orchestrazione: indipendente dall'interfaccia (la TUI le passa due callback)."""
 from __future__ import annotations
 
+import gzip
 import platform
 import shutil
 import struct
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
+from .auth import ArchiveAuth
 from .distro import Release, fetch_md5, find_latest, target_by_key
-from .download import download, filename_from_url, gunzip_sparse, md5_file
+from .download import download, filename_from_url, gunzip_sparse, md5_file, remote_size
+from .fit import fit_systems
 from .roms import System, dir_size, stage_system
 
 Log = Callable[[str], None]
@@ -37,6 +40,9 @@ class Settings:
     create_all_dirs: bool = False
     all_system_keys: tuple[str, ...] = ()
     root: Path = ROOT
+    fit_to_disk: bool = False      # se non ci stanno, toglie i giochi meno importanti
+    sizes: Mapping[str, int | None] = field(default_factory=dict)   # url -> byte (se noti)
+    auth: ArchiveAuth | None = None   # login archive.org: usato solo per le ROM, mai per Batocera
 
 
 def share_size_for(rom_bytes: int) -> int:
@@ -49,7 +55,21 @@ def share_size_for(rom_bytes: int) -> int:
 def partition2_start(img: Path) -> int:
     """Offset in byte della partizione 2 leggendo l'MBR."""
     with open(img, "rb") as f:
-        mbr = f.read(512)
+        return _p2_start(f.read(512))
+
+
+def partition2_start_gz(img_gz: Path) -> int:
+    """Come partition2_start ma sull'immagine compressa: serve solo l'inizio del flusso."""
+    with gzip.open(img_gz, "rb") as f:
+        return _p2_start(f.read(512))
+
+
+def max_rom_bytes(disk_gb: float, p2_start: int) -> int:
+    """Quanti byte di ROM ci stanno: inverso di share_size_for + margine, sul disco indicato."""
+    return max(0, int((disk_capacity_bytes(disk_gb) - p2_start - SHARE_MARGIN) / 1.03))
+
+
+def _p2_start(mbr: bytes) -> int:
     if mbr[510:512] != b"\x55\xaa":
         raise PipelineError("l'immagine non ha una tabella MBR: layout inatteso")
     entry = mbr[446 + 16 : 446 + 32]  # seconda voce
@@ -126,12 +146,34 @@ def run(settings: Settings, log: Log, progress: Progress) -> Path:
                 raise PipelineError("md5 dell'immagine errato: file scartato, riprova")
             log("md5 ok")
 
+    # 1b. se serve, adatta la selezione al disco (prima di scaricare ROM che poi non entrano)
+    systems = settings.systems
+    if settings.fit_to_disk:
+        sizes = dict(settings.sizes)
+        for url in (u for s in systems for u in s.urls):
+            if sizes.get(url) is None:
+                sizes[url] = remote_size(url, auth=settings.auth)
+        budget = max_rom_bytes(settings.disk_gb, partition2_start_gz(base_gz))
+        fit = fit_systems(systems, sizes, budget)
+        if fit.changed:
+            log(f"su {settings.disk_gb:g} GB non entra tutto: tengo {fit.kept_bytes / 1e9:.2f} GB "
+                f"di ROM, tolgo {fit.dropped_bytes / 1e9:.2f} GB")
+            for key, n in fit.dropped.items():
+                log(f"  [{key}] tolti {n} giochi")
+        if fit.unknown_size_files:
+            log(f"attenzione: {fit.unknown_size_files} file di dimensione ignota non sono "
+                "stati contati")
+        if not fit.systems:
+            raise PipelineError("nemmeno un gioco ci sta nel disco indicato: scegli un disco "
+                                "piu' grande")
+        systems = fit.systems
+
     # 2. ROM
-    for system in settings.systems:
+    for system in systems:
         for url in system.urls:
             log(f"[{system.key}] {filename_from_url(url)}")
             download(url, cache_roms / system.key / filename_from_url(url),
-                     lambda d, t, k=system.key: progress(f"ROM {k}", d, t))
+                     lambda d, t, k=system.key: progress(f"ROM {k}", d, t), auth=settings.auth)
         progress(f"ROM {system.key}", 1, 1)
         stage_system(system, cache_roms, stage)
     if settings.create_all_dirs:

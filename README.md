@@ -34,6 +34,24 @@ systems:
     urls: [...]
 ```
 
+Invece di elencare ogni file puoi indicare un intero item di archive.org:
+
+```yaml
+  psx:
+    name: PlayStation
+    item: <identificativo>          # archive.org/details/<identificativo>
+    include: '\.chd$'               # facoltativi: regex sul nome file
+    exclude: '\((Demo|Beta|Proto)'
+```
+
+Lo script legge l'elenco dei file da archive.org (con dimensioni). Con **Scegli i giochi** nella schermata apri l'elenco del sistema evidenziato, cerchi per nome e spunti solo quelli che vuoi: i file di uno stesso gioco (cue+bin, dischi multipli, m3u) restano insieme. La scelta va in `selections.yaml` (non tocca `roms.yaml`). Un item senza filtri né scelta scarica tutto, quindi controlla il totale mostrato.
+
+### Item ad accesso riservato (login archive.org)
+Alcuni item (collezioni "loggedin") rispondono 401 a chi non è collegato. Il pulsante **Login archive.org...** apre una finestra con email e password: la password va solo a archive.org e **non viene salvata**; si conserva la sessione in `~/.config/console-maker/archive_auth.json` (permessi 600, fuori dalla repo). I cookie di sessione vengono mandati solo ad archive.org e ai suoi server dei dati, in HTTPS, mai a Batocera né ad altri siti. **Disconnetti** cancella il file. In alternativa lo strumento usa le variabili `IA_LOGGED_IN_USER` / `IA_LOGGED_IN_SIG` oppure la configurazione di `ia` se c'è già. Un account non basta sempre: alcuni item si possono solo prendere in prestito, e in quel caso il download dà un 401 con un messaggio dedicato.
+
+### Se non ci stanno
+Con l'opzione **"Se non ci stanno, togli i giochi meno importanti"** (attiva di default) lo script legge la dimensione esatta dell'immagine base e, prima di scaricare le ROM, toglie quelle che non entrano nel disco indicato. Decidi cosa si tiene col campo `priority` di ogni sistema in `roms.yaml` (più alto = tenuto per primo; a parità conta l'ordine nel file). Nel log vedi quanti giochi sono stati tolti per sistema. Senza l'opzione, se non ci stanno si ferma con un errore. Limiti: i file di dimensione ignota contano 0 byte, e per i sistemi con `extract: true` la dimensione dello zip sottostima lo spazio reale.
+
 Il file viene validato all'avvio (URL non validi, chiavi sconosciute, duplicati). Rispetta il copyright: scarica solo ciò che hai il diritto di usare.
 
 ## Come funziona
