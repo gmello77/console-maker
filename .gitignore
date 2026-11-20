@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.pytest_cache/
+cache/
+work/
+out/
+roms.yaml
+config.yaml
+*.img
+*.img.gz
+*.part
+.DS_Store

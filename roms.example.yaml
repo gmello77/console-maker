@@ -1,0 +1,55 @@
+# Copia questo file in roms.yaml e, per ogni console/emulatore, indica i file da scaricare.
+#
+# - La chiave (nes, snes, mame...) e' il nome della cartella Batocera in /userdata/roms.
+# - `urls`: link diretti ai file su archive.org
+#     https://archive.org/download/<identificativo>/<nome file>.zip
+#   I sistemi con `urls` vuota non compaiono nel menu.
+# - `extract: true`: lo zip contiene molte ROM (un set completo) e va scompattato nella
+#   cartella del sistema. Con `false` (default) il file resta cosi' com'e': va bene per
+#   gli zip di singole ROM e per MAME/FBNeo, che vogliono gli zip chiusi.
+#
+# Rispetta il copyright: scarica solo quello che hai il diritto di usare.
+
+systems:
+  nes:
+    name: Nintendo NES
+    urls: []
+  snes:
+    name: Super Nintendo
+    urls: []
+  gb:
+    name: Game Boy
+    urls: []
+  gbc:
+    name: Game Boy Color
+    urls: []
+  gba:
+    name: Game Boy Advance
+    urls: []
+  megadrive:
+    name: Sega Mega Drive / Genesis
+    urls: []
+  mastersystem:
+    name: Sega Master System
+    urls: []
+  pcengine:
+    name: PC Engine
+    urls: []
+  psx:
+    name: PlayStation
+    urls: []
+  neogeo:
+    name: Neo Geo
+    urls: []
+  mame:
+    name: Arcade (MAME)
+    urls: []
+  fbneo:
+    name: Arcade (FinalBurn Neo)
+    urls: []
+  # Esempio con un set da scompattare:
+  # atari2600:
+  #   name: Atari 2600
+  #   extract: true
+  #   urls:
+  #     - https://archive.org/download/<identificativo>/<set completo>.zip
