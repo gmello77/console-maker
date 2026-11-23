@@ -11,3 +11,4 @@ config.yaml
 *.part
 .DS_Store
 selections.yaml
+device.yaml

@@ -1,0 +1,35 @@
+# Copia questo file in device.yaml e togli il # alle impostazioni che vuoi applicare.
+# Viene scritto in userdata/system/batocera.conf (e es_settings.cfg) dell'immagine: al primo
+# avvio il dispositivo e' gia' in italiano, collegato al Wi-Fi e pronto per lo scraper.
+#
+# ATTENZIONE: questo file contiene segreti (chiave Wi-Fi, password ScreenScraper). E' escluso da
+# git (.gitignore) e i valori non compaiono mai nei log. Nell'immagine finale restano in chiaro,
+# come Batocera stessa li conserva: non condividere l'immagine se contiene la tua chiave Wi-Fi.
+#
+# Le impostazioni NON elencate restano quelle predefinite della stessa versione di Batocera:
+# lo script parte dal batocera.conf predefinito dell'immagine e cambia solo queste chiavi.
+
+#language: it_IT          # system.language (es. it_IT, en_US, fr_FR, de_DE)
+#keyboard: it             # system.kblayout (es. it, us, fr, de)
+#timezone: Europe/Rome    # system.timezone (nome di /usr/share/zoneinfo)
+#hostname: BATOCERA       # nome del dispositivo in rete
+
+#wifi:
+#  country: IT            # codice paese a due lettere (00 = mondo)
+#  networks:              # la prima rete va in wifi.ssid, le altre in wifi2, wifi3...
+#    - ssid: NomeRete
+#      key: la-tua-password      # 8-63 caratteri; # ; $ vengono protetti da soli
+#    - ssid: ReteNascosta
+#      key: altra-password
+#      hidden: true              # Batocera ne supporta una sola nascosta
+
+# Account gratuito su screenscraper.fr: lo scraper di Batocera lo usa senza che tu debba
+# digitarlo sul dispositivo (si scrive in es_settings.cfg).
+#screenscraper:
+#  user: il-tuo-utente
+#  password: la-tua-password
+
+# Altre chiavi di batocera.conf, se sai cosa fai (chiave: valore).
+#extra:
+#  updates.type: stable
+#  audio.volume: 70

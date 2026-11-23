@@ -46,6 +46,13 @@ Invece di elencare ogni file puoi indicare un intero item di archive.org:
 
 Lo script legge l'elenco dei file da archive.org (con dimensioni). Con **Scegli i giochi** nella schermata apri l'elenco del sistema evidenziato, cerchi per nome e spunti solo quelli che vuoi: i file di uno stesso gioco (cue+bin, dischi multipli, m3u) restano insieme. La scelta va in `selections.yaml` (non tocca `roms.yaml`). Un item senza filtri né scelta scarica tutto, quindi controlla il totale mostrato.
 
+### Preconfigurazione (lingua, Wi-Fi, ScreenScraper)
+Copia `device.example.yaml` in `device.yaml` e togli il `#` alle impostazioni che vuoi: lingua (`it_IT`), tastiera, fuso orario, nome in rete, una o più reti Wi-Fi e le credenziali di ScreenScraper. Al primo avvio il dispositivo è già in italiano, collegato al Wi-Fi e con lo scraper pronto.
+
+Come viene applicata: lo script estrae dall'immagine il `batocera.conf` predefinito **della stessa versione** e cambia soltanto le chiavi che hai scelto (le altre restano com'erano, anche accanto ai commenti originali); le credenziali ScreenScraper vanno in `es_settings.cfg`. Dal codice di Batocera risulta che al primo avvio i file già presenti in `userdata/system` non vengono sovrascritti. Senza `device.yaml`, o con solo righe commentate, non viene scritto niente. L'opzione "Non applicare device.yaml" lo esclude.
+
+Riservatezza: `device.yaml` contiene segreti ed è escluso da git. I valori non compaiono mai a schermo né nei log (solo un riassunto: "lingua it_IT, 1 rete Wi-Fi, ScreenScraper"). Nell'immagine finale restano in chiaro, come Batocera stessa li conserva: **non condividere l'immagine** se contiene la tua chiave Wi-Fi. Un `device.yaml` non valido (per esempio una chiave Wi-Fi troppo corta) impedisce di avviare e dice perché; a-capo nei valori vengono rifiutati.
+
 ### Download veloci (più connessioni)
 archive.org limita la velocità per singola connessione, quindi ogni file viene scaricato **a pezzi in parallelo** (4 connessioni di default; nei miei test su archive.org una sola connessione dava ~0,09 MB/s e quattro ~0,6 MB/s, otto non miglioravano). Prima di partire una richiesta di prova verifica che il server accetti davvero gli intervalli: se no, si scarica come prima in un solo flusso. I file sotto 16 MB si scaricano in un solo flusso. Se l'operazione si interrompe, alla ripresa si rifanno solo i pezzi mancanti (`*.part` e `*.part.state` in `cache/`). Per cambiare il numero di connessioni (1-16, 1 = flusso unico) modifica `connections` in `config.yaml`.
 

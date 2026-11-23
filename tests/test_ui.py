@@ -273,3 +273,88 @@ async def test_two_progress_bars_show_file_speed_and_total(tmp_path, monkeypatch
         app.reset_progress()
         assert str(app.query_one("#overalllabel", Label).render()) == ""
         assert app.query_one("#bar", ProgressBar).progress == 0
+
+
+# ---------------------------------------------------------------- layout: opzioni sempre raggiungibili
+MANY = "systems:\n" + "".join(
+    f"  s{i:02d}:\n    name: Sistema {i}\n    urls: [https://archive.org/download/a/f{i}.zip]\n"
+    for i in range(14))
+
+
+@pytest.mark.parametrize("size", [(125, 30), (100, 24), (140, 50)])
+async def test_every_option_stays_reachable_after_the_systems_list_fills(tmp_path, size):
+    """Bug segnalato: caricata la lista dei sistemi, il box Opzioni scendeva e l'ultima
+    opzione non era piu' cliccabile."""
+    (tmp_path / "roms.yaml").write_text(MANY)
+    app = ConsoleMakerApp(root=tmp_path)
+    async with app.run_test(size=size) as pilot:
+        await boot(app, pilot)
+        opts = app.query_one("#options", SelectionList)
+        assert app.query_one("#systems", SelectionList).option_count == 14
+        col = opts.parent
+        col.scroll_end(animate=False)
+        await pilot.pause()
+        menu = app.query_one("#menu")
+        for i in range(opts.option_count):
+            row = opts.content_region.y + i             # riga dell'opzione i (bordo escluso)
+            assert menu.region.y <= row < menu.region.bottom, \
+                f"opzione {i} fuori dal riquadro del menu a {size}: riga {row}, menu {menu.region}"
+        # e il clic sull'ultima funziona davvero
+        last = opts.get_option_at_index(opts.option_count - 1).value
+        assert last not in opts.selected
+        await pilot.click(offset=(opts.content_region.x + 3,
+                                  opts.content_region.y + opts.option_count - 1))
+        await pilot.pause()
+        assert last in opts.selected
+
+
+# ---------------------------------------------------------------- device.yaml nella schermata
+DEVICE_YAML = """
+language: it_IT
+timezone: Europe/Rome
+wifi:
+  networks:
+    - {ssid: CasaMia, key: password-molto-segreta}
+screenscraper: {user: mario, password: scraper-segreta}
+"""
+
+
+async def test_device_yaml_shown_without_secrets_and_skippable(tmp_path):
+    (tmp_path / "roms.yaml").write_text(ROMS)
+    (tmp_path / "device.yaml").write_text(DEVICE_YAML)
+    app = ConsoleMakerApp(root=tmp_path)
+    async with app.run_test(size=(140, 50)) as pilot:
+        await boot(app, pilot)
+        text = str(app.query_one("#summary").render())
+        assert "Preconfigurazione (device.yaml): lingua it_IT" in text
+        assert "1 rete/i Wi-Fi" in text and "ScreenScraper" in text
+        for secret in ("password-molto-segreta", "scraper-segreta", "mario", "CasaMia"):
+            assert secret not in text                                  # niente segreti a schermo
+        assert app.selected_device() is not None
+        app.query_one("#options", SelectionList).select("skip_device")
+        await pilot.pause()
+        assert app.selected_device() is None
+        assert "Preconfigurazione" not in str(app.query_one("#summary").render())
+
+
+async def test_no_device_yaml_means_no_line_and_no_device(tmp_path):
+    (tmp_path / "roms.yaml").write_text(ROMS)
+    app = ConsoleMakerApp(root=tmp_path)
+    async with app.run_test(size=(140, 50)) as pilot:
+        await boot(app, pilot)
+        assert app.selected_device() is None
+        assert "Preconfigurazione" not in str(app.query_one("#summary").render())
+        assert not app.query_one("#start", Button).disabled
+
+
+async def test_invalid_device_yaml_blocks_start_and_logs_the_reason_not_the_secrets(tmp_path):
+    (tmp_path / "roms.yaml").write_text(ROMS)
+    (tmp_path / "device.yaml").write_text(
+        "wifi:\n  networks:\n    - {ssid: CasaMia, key: corta}\nscreenscraper: {user: mario, password: scraper-segreta}\n")
+    app = ConsoleMakerApp(root=tmp_path)
+    async with app.run_test(size=(140, 50)) as pilot:
+        await boot(app, pilot)
+        assert app.query_one("#start", Button).disabled               # non si parte con un file sbagliato
+        log = "\n".join(str(l.text) for l in app.query_one("#log").lines)
+        assert "ERRORE" in log and "chiave WPA" in log
+        assert "scraper-segreta" not in log and "corta" not in log.replace("chiave WPA", "")

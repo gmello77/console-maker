@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from .auth import ArchiveAuth
+from .device import DeviceConfig, merge_conf, merge_es_settings
 from .distro import Release, fetch_md5, find_latest, target_by_key
 from .download import (DEFAULT_CONNECTIONS, download, filename_from_url, gunzip_sparse,
                        md5_file, remote_size)
@@ -46,6 +47,7 @@ class Settings:
     fit_to_disk: bool = False      # se non ci stanno, toglie i giochi meno importanti
     sizes: Mapping[str, int | None] = field(default_factory=dict)   # url -> byte (se noti)
     bios: list[System] = field(default_factory=list)   # gruppi BIOS di roms.yaml (gia' espansi)
+    device: DeviceConfig | None = None   # lingua, Wi-Fi, ScreenScraper... (device.yaml)
     connections: int = DEFAULT_CONNECTIONS   # connessioni parallele per file
     auth: ArchiveAuth | None = None   # login archive.org: usato solo per le ROM, mai per Batocera
 
@@ -94,20 +96,16 @@ def fetch_release(settings: Settings) -> Release:
     return find_latest(target_by_key(settings.target_key))
 
 
-def _run_builder(img: Path, stage: Path, share_bytes: int, log: Log) -> None:
+def _exec_builder(docker_args: list[str], linux_cmd: list[str], log: Log, what: str) -> None:
+    """Esegue uno script del builder: in Docker (macOS) oppure direttamente su Linux."""
     builder_dir = ROOT / "builder"
-    script = builder_dir / "build_image.sh"
     if shutil.which("docker"):
         log("builder: preparo l'immagine Docker")
         subprocess.run(["docker", "build", "-q", "-t", DOCKER_TAG, str(builder_dir)],
                        check=True, stdout=subprocess.DEVNULL)
-        cmd = ["docker", "run", "--rm", "--privileged",
-               "-v", f"{img.parent}:/work/img",
-               "-v", f"{stage}:/work/stage:ro",
-               DOCKER_TAG, "/build_image.sh",
-               f"/work/img/{img.name}", "/work/stage", str(share_bytes)]
+        cmd = ["docker", "run", "--rm", "--privileged", *docker_args]
     elif platform.system() == "Linux":
-        cmd = ["sudo", "bash", str(script), str(img), str(stage), str(share_bytes)]
+        cmd = linux_cmd
     else:
         raise PipelineError("serve Docker (su macOS/Windows) per modificare l'immagine")
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -118,7 +116,55 @@ def _run_builder(img: Path, stage: Path, share_bytes: int, log: Log) -> None:
         if line:
             log(f"builder: {line}")
     if proc.wait() != 0:
-        raise PipelineError(f"il builder e' fallito (codice {proc.returncode})")
+        raise PipelineError(f"{what} e' fallito (codice {proc.returncode})")
+
+
+def _run_builder(img: Path, stage: Path, share_bytes: int, log: Log) -> None:
+    script = ROOT / "builder" / "build_image.sh"
+    _exec_builder(
+        ["-v", f"{img.parent}:/work/img", "-v", f"{stage}:/work/stage:ro",
+         DOCKER_TAG, "/build_image.sh", f"/work/img/{img.name}", "/work/stage", str(share_bytes)],
+        ["sudo", "bash", str(script), str(img), str(stage), str(share_bytes)],
+        log, "il builder")
+
+
+def _run_extract(img: Path, out: Path, log: Log) -> None:
+    """Estrae da `img` (sola lettura) i file di configurazione predefiniti in `out`."""
+    script = ROOT / "builder" / "extract_defaults.sh"
+    _exec_builder(
+        ["-v", f"{img.parent}:/work/img:ro", "-v", f"{out}:/work/out",
+         DOCKER_TAG, "/extract_defaults.sh", f"/work/img/{img.name}", "/work/out"],
+        ["sudo", "bash", str(script), str(img), str(out)],
+        log, "l'estrazione dei file predefiniti")
+
+
+STAGED_DEVICE_FILES = ("system/batocera.conf", "system/configs/emulationstation/es_settings.cfg")
+
+
+def preconfigure(device: DeviceConfig, img: Path, stage: Path, work: Path, log: Log) -> None:
+    """Scrive in stage/ batocera.conf (e, se serve, es_settings.cfg) fusi con i predefiniti
+    estratti dall'immagine stessa. Nei log finisce solo un riassunto, mai i valori."""
+    defaults = work / "defaults"
+    defaults.mkdir(parents=True, exist_ok=True)
+    _run_extract(img, defaults, log)
+    default_conf = defaults / "batocera.conf"
+    if not default_conf.is_file():
+        raise PipelineError("non trovo il batocera.conf predefinito nell'immagine: non applico "
+                            "la preconfigurazione per non scrivere un file incompleto")
+    out = stage / "system"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "batocera.conf").write_text(
+        merge_conf(default_conf.read_text(encoding="utf-8"), device.conf_overrides()),
+        encoding="utf-8")
+    xml = device.es_settings_xml()
+    if xml:
+        es_dir = out / "configs" / "emulationstation"
+        es_dir.mkdir(parents=True, exist_ok=True)
+        default_es = defaults / "es_settings.cfg"
+        if default_es.is_file():
+            xml = merge_es_settings(default_es.read_text(encoding="utf-8"), xml)
+        (es_dir / "es_settings.cfg").write_text(xml, encoding="utf-8")
+    log(f"preconfigurazione applicata: {device.summary()}")
 
 
 class _Overall:
@@ -250,9 +296,18 @@ def run(settings: Settings, log: Log, progress: Progress, overall: Overall | Non
             f"il disco ne offre circa {capacity / 1e9:.1f}. "
             "Togli qualche sistema o scegli un disco piu' grande.")
 
+    # 3b. preconfigurazione (lingua, Wi-Fi, ScreenScraper)
+    if settings.device and not settings.device.is_empty:
+        preconfigure(settings.device, img, stage, work, log)
+
     # 4. scrittura nell'immagine
     progress("Scrittura immagine", 0, 0)
-    _run_builder(img, stage, share_bytes, log)
+    try:
+        _run_builder(img, stage, share_bytes, log)
+    finally:
+        # i file con Wi-Fi e password non devono restare su disco, nemmeno se il builder fallisce
+        for rel in STAGED_DEVICE_FILES:
+            (stage / rel).unlink(missing_ok=True)
 
     final = out_dir / name
     if final.exists():

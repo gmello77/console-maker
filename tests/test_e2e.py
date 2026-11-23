@@ -19,6 +19,12 @@ pytestmark = pytest.mark.skipif(
 
 IMG_NAME = "batocera-h700-anbernic-rg-sp-44-20261116.img.gz"
 
+# batocera.conf predefinito dell'immagine finta (stessa forma di quello vero, in piccolo)
+DEFAULT_CONF = (
+    "## Hostname\nsystem.hostname=BATOCERA\nwifi.enabled=0\n#wifi.ssid=new ssid\n"
+    "#wifi.key=new key\n#system.language=en_US\naudio.volume=90\nupdates.type=stable\n")
+DEFAULT_CONF_SHELL = DEFAULT_CONF.replace("\n", "\\n").replace("'", "'\\''")
+
 
 def make_fake_base(dest: Path) -> None:
     """Immagine con il layout di Batocera: boot FAT + SHARE ext4 in fondo."""
@@ -32,7 +38,15 @@ for i in 0 1 2 3; do [ -e /dev/loop$i ] || mknod -m660 /dev/loop$i b 7 $i; done
 truncate -s 50M /work/fake.img
 printf 'label: dos\\n2048,65536,c\\n67584,32768,83\\n' | sfdisk -q /work/fake.img
 L=$(losetup -f --show -o $((67584*512)) --sizelimit $((32768*512)) /work/fake.img)
-mkfs.ext4 -q -L SHARE $L; losetup -d $L"""], check=True, capture_output=True)
+mkfs.ext4 -q -L SHARE $L; losetup -d $L
+# boot FAT con boot/batocera (squashfs) che contiene il batocera.conf predefinito
+B=$(losetup -f --show -o $((2048*512)) --sizelimit $((65536*512)) /work/fake.img)
+mkfs.vfat $B >/dev/null
+mkdir -p /s/usr/share/batocera/datainit/system /m1
+printf '%b' "$DEFAULT_CONF" > /s/usr/share/batocera/datainit/system/batocera.conf
+mksquashfs /s /tmp/batocera -noappend -quiet
+mount -t vfat $B /m1 && mkdir -p /m1/boot && cp /tmp/batocera /m1/boot/batocera && umount /m1
+losetup -d $B""".replace("$DEFAULT_CONF", DEFAULT_CONF_SHELL)], check=True, capture_output=True)
     dest.write_bytes(gzip.compress((work / "fake.img").read_bytes()))
 
 
@@ -208,3 +222,100 @@ def test_bios_for_a_dropped_system_is_not_downloaded(tmp_path, fake_net, monkeyp
     assert "dc_boot.bin" in downloaded                       # quello senza 'for' resta
     assert any("BIOS non necessari" in m and "psx_bios" in m for m in logs)
     verify_share(final, {"roms/mame/pacman.zip": b"PACZIP", "bios/dc_boot.bin": b"DCBIOS"})
+
+
+# ---------------------------------------------------------------- preconfigurazione (device.yaml)
+from cm.device import merge_conf, parse_device
+
+
+def share_listing(img: Path, rel: str) -> str:
+    """Contenuto (ls) di una cartella della SHARE, o 'MANCA'."""
+    script = """set -e
+for i in 0 1 2 3; do [ -e /dev/loop$i ] || mknod -m660 /dev/loop$i b 7 $i; done
+read S Z < <(parted -m -s /work/%s unit B print | awk -F: '$1=="2"{gsub("B","",$2);gsub("B","",$4);print $2,$4}')
+L=$(losetup -f --show -r -o $S --sizelimit $Z /work/%s)
+mkdir -p /m; mount -o ro $L /m; trap 'umount /m; losetup -d $L' EXIT
+if [ -e '/m/%s' ]; then ls -A '/m/%s'; else echo MANCA; fi""" % (img.name, img.name, rel, rel)
+    return subprocess.run(["docker", "run", "--rm", "--privileged", "-v", f"{img.parent}:/work",
+                           pipeline.DOCKER_TAG, "bash", "-c", script],
+                          check=True, capture_output=True, text=True).stdout.strip()
+
+
+DEVICE = {"language": "it_IT", "timezone": "Europe/Rome",
+          "wifi": {"country": "IT", "networks": [{"ssid": "CasaMia", "key": "pa#ss;wo$rd-segreta"}]},
+          "screenscraper": {"user": "mario", "password": "scraper-segreta"}}
+SECRETS = ("pa#ss;wo$rd-segreta", "pa\\#ss", "scraper-segreta")
+
+
+def one_system():
+    return [System("nes", "NES", ("https://archive.org/download/x/nes-set.zip",), True)]
+
+
+def test_preconfiguration_is_merged_into_the_images_own_defaults(tmp_path, fake_net):
+    device = parse_device(DEVICE)
+    logs = []
+    final = pipeline.run(
+        pipeline.Settings(target_key="rg-sp", disk_gb=4, systems=one_system(),
+                          root=tmp_path / "root", device=device),
+        logs.append, lambda *a: None)
+    expected = merge_conf(DEFAULT_CONF, device.conf_overrides()).encode()
+    es = device.es_settings_xml().encode()
+    verify_share(final, {"system/batocera.conf": expected,
+                         "system/configs/emulationstation/es_settings.cfg": es,
+                         "roms/nes/Game A.nes": b"AAA"})
+    text = expected.decode()
+    assert "audio.volume=90" in text and "updates.type=stable" in text      # i predefiniti restano
+    assert "system.language=it_IT" in text and "wifi.enabled=1" in text
+    assert "wifi.key=pa\\#ss\\;wo\\$rd-segreta" in text                       # caratteri protetti
+    assert "#wifi.ssid" not in text and "wifi.ssid=CasaMia" in text
+    # nei log solo il riassunto: nessun segreto
+    joined = "\n".join(logs)
+    assert "preconfigurazione applicata: lingua it_IT" in joined
+    for secret in SECRETS + ("mario",):
+        assert secret not in joined
+
+
+def test_without_device_nothing_is_written_to_userdata_system(tmp_path, fake_net):
+    final = pipeline.run(
+        pipeline.Settings(target_key="rg-sp", disk_gb=4, systems=one_system(),
+                          root=tmp_path / "root"),
+        lambda m: None, lambda *a: None)
+    assert share_listing(final, "system") == "MANCA"      # Batocera creera' i suoi predefiniti
+    empty = parse_device({})
+    final2 = pipeline.run(
+        pipeline.Settings(target_key="rg-sp", disk_gb=4, systems=one_system(),
+                          root=tmp_path / "root2", device=empty),
+        lambda m: None, lambda *a: None)
+    assert share_listing(final2, "system") == "MANCA"      # configurazione vuota = niente da fare
+
+
+def test_only_language_does_not_create_es_settings(tmp_path, fake_net):
+    final = pipeline.run(
+        pipeline.Settings(target_key="rg-sp", disk_gb=4, systems=one_system(),
+                          root=tmp_path / "root", device=parse_device({"language": "it_IT"})),
+        lambda m: None, lambda *a: None)
+    assert share_listing(final, "system") == "batocera.conf"
+
+
+def test_missing_default_conf_aborts_instead_of_writing_an_incomplete_file(tmp_path, fake_net, monkeypatch):
+    monkeypatch.setattr(pipeline, "_run_extract", lambda *a, **k: None)   # nessun file estratto
+    with pytest.raises(pipeline.PipelineError, match="batocera.conf predefinito"):
+        pipeline.run(
+            pipeline.Settings(target_key="rg-sp", disk_gb=4, systems=one_system(),
+                              root=tmp_path / "root", device=parse_device(DEVICE)),
+            lambda m: None, lambda *a: None)
+    assert not list((tmp_path / "root" / "out").glob("*.img"))
+
+
+def test_secrets_are_removed_from_disk_even_if_the_builder_fails(tmp_path, fake_net, monkeypatch):
+    def boom(*a, **k):
+        raise pipeline.PipelineError("simulato")
+    monkeypatch.setattr(pipeline, "_run_builder", boom)
+    with pytest.raises(pipeline.PipelineError, match="simulato"):
+        pipeline.run(
+            pipeline.Settings(target_key="rg-sp", disk_gb=4, systems=one_system(),
+                              root=tmp_path / "root", device=parse_device(DEVICE)),
+            lambda m: None, lambda *a: None)
+    leftovers = [p for p in (tmp_path / "root").rglob("*")
+                 if p.is_file() and any(s.encode() in p.read_bytes() for s in ("CasaMia", "scraper-segreta"))]
+    assert leftovers == []                                 # nessun file con Wi-Fi o password su disco

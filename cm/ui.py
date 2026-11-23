@@ -12,6 +12,7 @@ from textual.widgets import (Button, Footer, Header, Input, Label, ProgressBar,
 from textual.widgets.selection_list import Selection
 
 from . import archive, auth, config, pipeline
+from .device import DeviceConfig, DeviceConfigError, load_device
 from .distro import TARGETS
 from .login_screen import LoginScreen
 from .picker import GamePicker
@@ -24,6 +25,7 @@ IMAGE_BASE_GB = 8.9   # boot 8 GB + margine SHARE: stima, il valore esatto lo le
 OPTIONS = (
     ("fit_disk", "Se non ci stanno, togli i giochi meno importanti (vedi priority)"),
     ("skip_bios", "Non includere i file BIOS di roms.yaml"),
+    ("skip_device", "Non applicare device.yaml (lingua, Wi-Fi, ScreenScraper)"),
     ("verify_md5", "Verifica md5 dell'immagine Batocera"),
     ("keep_cache", "Tieni i download in cache (cache/)"),
     ("create_all_dirs", "Crea le cartelle vuote di tutti i sistemi di roms.yaml"),
@@ -35,14 +37,14 @@ class ConsoleMakerApp(App):
     SUB_TITLE = "immagini Batocera con ROM precaricate"
     BINDINGS = [("q", "quit", "Esci"), ("a", "toggle_all", "Tutti/nessun sistema")]
     CSS = """
-    #menu { height: auto; max-height: 45%; }
-    .col { width: 1fr; height: auto; padding: 0 1; }
+    #menu { height: 3fr; min-height: 6; }
+    .col { width: 1fr; height: 100%; padding: 0 1; }
     .col > Label { text-style: bold; margin-top: 1; }
     SelectionList { height: auto; max-height: 12; }
     #summary { padding: 0 2; height: auto; }
     #bar, #overall { margin: 0 2; }
     #barlabel, #overalllabel { margin: 0 2; }
-    #log { height: 1fr; min-height: 6; margin: 0 1; border: round $primary; }
+    #log { height: 2fr; min-height: 5; margin: 0 1; border: round $primary; }
     #start { margin: 0 2; }
     """
 
@@ -65,6 +67,8 @@ class ConsoleMakerApp(App):
         self.speedo = Speedometer()            # file in corso
         self.overall_speedo = Speedometer()    # totale ROM + BIOS
         self.bios_expanded: dict[str, System] = {}
+        self.device: DeviceConfig | None = None
+        self.device_error: str | None = None
 
     # ------------------------------------------------------------ layout
     def compose(self) -> ComposeResult:
@@ -108,6 +112,14 @@ class ConsoleMakerApp(App):
     def on_mount(self) -> None:
         self.show_auth_status()
         log = self.query_one("#log", RichLog)
+        try:
+            self.device = load_device(self.root / "device.yaml")
+        except DeviceConfigError as e:
+            self.device_error = str(e)
+            log.write(f"ERRORE: {e}")
+        else:
+            for w in (self.device.warnings if self.device else ()):
+                log.write(f"avviso: {w}")
         try:
             self.roms = load_roms(self.root / "roms.yaml")
         except RomsConfigError as e:
@@ -181,7 +193,8 @@ class ConsoleMakerApp(App):
         self.loaded = True
         if sl.option_count == 0:
             log.write("roms.yaml non contiene nessun link: compila 'urls' o 'item'.")
-        self.query_one("#start", Button).disabled = sl.option_count == 0 or self.running
+        self.query_one("#start", Button).disabled = (
+            sl.option_count == 0 or self.running or self.device_error is not None)
         self.refresh_summary()
 
     # ------------------------------------------------------------ stato
@@ -224,6 +237,9 @@ class ConsoleMakerApp(App):
                 if unknown:
                     txt += f" (+{unknown} file di dimensione ignota)"
             lines.append(txt)
+            device = self.selected_device()
+            if device:
+                lines.append(f"Preconfigurazione (device.yaml): {device.summary()}")
             if disk:
                 usable = pipeline.disk_capacity_bytes(disk) / 1e9
                 lines.append(f"Disco {disk:g} GB (utilizzabili circa {usable:.1f} GB): "
@@ -289,7 +305,7 @@ class ConsoleMakerApp(App):
             systems=[self.expanded[k] for k in keys],
             verify_md5="verify_md5" in opts, keep_cache="keep_cache" in opts,
             fit_to_disk="fit_disk" in opts, sizes=dict(self.sizes), auth=self.auth,
-            connections=conns,
+            connections=conns, device=self.selected_device(),
             bios=[] if "skip_bios" in opts else list(self.bios_expanded.values()),
             create_all_dirs="create_all_dirs" in opts,
             all_system_keys=tuple(self.roms.systems), root=self.root)
@@ -301,6 +317,14 @@ class ConsoleMakerApp(App):
         """Connessioni per file dal config.yaml, limitate a 1-16 (valori strani = predefinito)."""
         v = self.saved.get("connections")
         return v if isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 16 else 4
+
+    def selected_device(self) -> DeviceConfig | None:
+        """device.yaml da applicare (None se manca, e' vuoto o e' stato escluso dalle opzioni)."""
+        if self.device is None or self.device.is_empty:
+            return None
+        if "skip_device" in self.query_one("#options", SelectionList).selected:
+            return None
+        return self.device
 
     def selected_bios(self) -> list[System]:
         """BIOS che finirebbero nell'immagine con la scelta attuale (come fa la pipeline)."""

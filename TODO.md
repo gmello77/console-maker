@@ -8,6 +8,8 @@ Stato al 2026-11-20. Le voci sono in ordine di lavoro. Convenzioni: `[x]` fatto 
 - [x] Punto 2: adattamento automatico al disco (`priority` per sistema, opzione attiva di default, dimensione esatta letta dall'MBR dell'immagine compressa).
 - [x] Punto 3, BIOS: sezione `bios:` in `roms.yaml` (`urls`/`item`, `dir`, `for`), in `userdata/bios`; contati nello spazio, mai sfoltiti, esclusi se i loro sistemi non ci sono. Provato con Docker vero. Non provato: BIOS reali su un dispositivo.
 - [x] **Download a pezzi in parallelo** (`cm/download.py`): 4 connessioni di default (`connections` in `config.yaml`), ripresa per pezzo, fallback automatico se il server non accetta Range. Misurato su archive.org: ~7 volte più veloce di una connessione.
+- [x] **Preconfigurazione** (`device.yaml`, `cm/device.py`): lingua, tastiera, fuso, hostname, Wi-Fi (più reti, una nascosta), ScreenScraper, chiavi extra. Fusa nel `batocera.conf` predefinito estratto dall'immagine (`builder/extract_defaults.sh`), verificato su quella vera: cambiano solo le righe scelte. Provato con Docker vero su immagine finta. **Non provato su un dispositivo**: che al primo avvio Batocera rispetti i file è dedotto dal codice di `S12populateshare`, non da un avvio.
+- [x] Corretto: ultime opzioni non raggiungibili dopo il caricamento dei sistemi (colonne alte quanto il contenuto, clippate dal menu). Ora le colonne scorrono; test a 3 dimensioni di terminale con clic reale sull'ultima opzione.
 - [x] Due barre di avanzamento (file in corso e totale ROM+BIOS) con velocità e tempo stimato.
 - [x] Download: stop immediato su 401/403/404/410 con messaggio chiaro, avviso se un item è ad accesso riservato.
 
@@ -19,7 +21,6 @@ Stato al 2026-11-20. Le voci sono in ordine di lavoro. Convenzioni: `[x]` fatto 
   - **Non verificato con un account vero:** il login riuscito (il formato della risposta è quello letto nel codice di `ia`, provato solo con credenziali false) e che i cookie arrivino al server dei dati dopo il redirect. Serve un account vero: provare con `htgdb-gamepacks`. Se un account gratuito non basta, il 401 col login ora dà un messaggio dedicato.
 
 ## Prossimi punti (priorità alta)
-- [ ] **Preconfigurazione Batocera**: `device.yaml` con lingua, fuso orario, Wi-Fi, credenziali ScreenScraper, scritti in `userdata/system/batocera.conf` dentro la SHARE, così lo scraper integrato parte senza configurare il dispositivo. File: `builder/build_image.sh`.
 - [ ] **Verifica checksum delle ROM** con gli md5 di archive.org (già letti in `ArchiveFile.md5`, oggi non usati): ricontrollo dopo il download e riscarico se non corrispondono. File: `cm/download.py`.
 - [ ] **Controllo spazio sul Mac** prima di partire (cache + stage + immagine, 9 GB e più).
 
@@ -43,6 +44,7 @@ Stato al 2026-11-20. Le voci sono in ordine di lavoro. Convenzioni: `[x]` fatto 
 - [ ] Supporto Windows (Docker Desktop + WSL).
 
 ## Da verificare / chiudere
+- [ ] Avviare un'immagine con `device.yaml` su un RG SP: verificare che lingua, fuso e Wi-Fi siano applicati al primo avvio e che lo scraper trovi le credenziali. Verificare anche l'escape di `# ; $` nella chiave Wi-Fi (documentato nel `batocera.conf` di Batocera, mai provato su un dispositivo).
 - [ ] **Avviare l'immagine su un RG SP reale** (microSD con Etcher): è l'unica prova che parte e che SHARE si espande.
 - [ ] Misurare i tempi di Docker su macOS con un'immagine da 9 GB.
 - [ ] Provare la finestra "Scegli i giochi" su un item reale con più di 1.000 file (oltre il limite mostrato) e con giochi multi-disco veri.
