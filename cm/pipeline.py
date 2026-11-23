@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import gzip
+import os
 import platform
 import shutil
 import struct
@@ -168,6 +169,68 @@ def preconfigure(device: DeviceConfig, img: Path, stage: Path, work: Path, log: 
     log(f"preconfigurazione applicata: {device.summary()}")
 
 
+# ---------------------------------------------------------------- spazio sul disco del Mac
+# Occupazione dell'immagine decompressa (file sparso) per byte del .gz. Misurato con
+# st_blocks sull'immagine vera dell'RG SP: 2,54 GB occupati per 2,35 GB di .gz (1,08).
+# Si tiene un margine del 10% perche' per gli altri dispositivi non e' misurato.
+ALLOC_FACTOR = 1.2
+EXTRACT_FACTOR = 2.0          # stima: uno zip di ROM scompattato pesa circa il doppio
+SPACE_MARGIN = 1_000_000_000  # spazio che deve restare libero a lavoro finito
+
+
+@dataclass(frozen=True)
+class SpaceNeed:
+    downloads: int            # byte ancora da scaricare in cache/
+    image: int                # immagine decompressa + ROM copiate dentro
+    extract: int = 0          # ROM scompattate (copia in work/ e in piu' nell'immagine)
+    stage_copy: int = 0       # copie al posto degli hard link (se cache e work sono su volumi diversi)
+    margin: int = SPACE_MARGIN
+
+    @property
+    def total(self) -> int:
+        return self.downloads + self.image + self.extract + self.stage_copy + self.margin
+
+
+def space_needed(*, base_gz_size: int, base_gz_missing: int, roms_missing: int, roms_total: int,
+                 extract_zip_bytes: int = 0, hardlinks: bool = True) -> SpaceNeed:
+    """Stima dello spazio che serve sul volume di lavoro. E' una stima prudente, non un limite
+    esatto: la dimensione reale dell'immagine decompressa si conosce solo dopo averla fatta."""
+    return SpaceNeed(
+        downloads=base_gz_missing + roms_missing,
+        image=int(base_gz_size * ALLOC_FACTOR) + int(roms_total * 1.02),
+        extract=int(extract_zip_bytes * (2 * EXTRACT_FACTOR - 1)),
+        stage_copy=0 if hardlinks else max(roms_total - extract_zip_bytes, 0))
+
+
+def allocated_bytes(path: Path) -> int:
+    """Byte realmente occupati su disco (un file sparso occupa meno della sua dimensione)."""
+    try:
+        if path.is_file():
+            return path.stat().st_blocks * 512
+        return sum(f.stat().st_blocks * 512 for f in path.rglob("*") if f.is_file())
+    except OSError:
+        return 0
+
+
+def check_space(need: SpaceNeed, root: Path) -> int:
+    """Ferma la pipeline se sul volume di `root` non c'e' abbastanza spazio. Ritorna lo spazio libero."""
+    free = shutil.disk_usage(root).free
+    if free >= need.total:
+        return free
+    parts = [f"download {need.downloads / 1e9:.1f} GB", f"immagine {need.image / 1e9:.1f} GB"]
+    if need.extract:
+        parts.append(f"ROM scompattate {need.extract / 1e9:.1f} GB")
+    if need.stage_copy:
+        parts.append(f"copie temporanee {need.stage_copy / 1e9:.1f} GB")
+    parts.append(f"margine {need.margin / 1e9:.1f} GB")
+    cache, out = allocated_bytes(root / "cache"), allocated_bytes(root / "out")
+    raise PipelineError(
+        f"spazio insufficiente sul disco del Mac ({root}): servono circa {need.total / 1e9:.1f} GB "
+        f"({', '.join(parts)}) e ne restano liberi {free / 1e9:.1f}. "
+        f"Libera spazio: cache/ occupa {cache / 1e9:.1f} GB (si puo' cancellare, si riscarica), "
+        f"out/ {out / 1e9:.1f} GB (immagini gia' create).")
+
+
 class _Md5Index:
     """md5 pubblicati da archive.org per gli URL scaricati, con un solo accesso per item."""
 
@@ -265,6 +328,13 @@ def run(settings: Settings, log: Log, progress: Progress, overall: Overall | Non
     rel = fetch_release(settings)
     kind = "release candidate" if rel.is_release_candidate else "stable"
     log(f"Batocera {rel.version} ({kind}, {rel.date}) per {rel.target.label}")
+    # controllo rapido: c'e' almeno posto per l'immagine base e per la sua versione decompressa?
+    base_size = remote_size(rel.url)
+    if base_size:
+        base_dest = cache_base / rel.filename
+        have = base_dest.exists() and base_dest.stat().st_size == base_size
+        check_space(space_needed(base_gz_size=base_size, base_gz_missing=0 if have else base_size,
+                                 roms_missing=0, roms_total=0), root)
     base_gz = download(rel.url, cache_base / rel.filename,
                        lambda d, t: progress("Immagine Batocera", d, t),
                        connections=settings.connections)
@@ -315,6 +385,29 @@ def run(settings: Settings, log: Log, progress: Progress, overall: Overall | Non
              [("BIOS", b, cache_bios, "bios") for b in bios]
     plan = [(s, u) for _, s, _, _ in groups for u in s.urls]
     total = sum(sizes.get(u) or s.sizes.get(u) or 0 for s, u in plan)
+
+    # controllo completo dello spazio, ora che si sa quali file entrano e cosa e' gia' in cache
+    missing = known_total = zip_bytes = unknown_sizes = 0
+    for kind, system, cache_root, area in groups:
+        for url in system.urls:
+            size = sizes.get(url) or system.sizes.get(url)
+            if not size:
+                unknown_sizes += 1
+                continue
+            known_total += size
+            dest = cache_root / system.key / filename_from_url(url)
+            if not (dest.exists() and dest.stat().st_size == size):
+                part = dest.with_name(dest.name + ".part")   # il parziale gia' scaricato non si ricontano
+                missing += max(size - (allocated_bytes(part) if part.exists() else 0), 0)
+            if system.extract and url.lower().endswith(".zip"):
+                zip_bytes += size
+    need = space_needed(base_gz_size=base_gz.stat().st_size, base_gz_missing=0,
+                        roms_missing=missing, roms_total=known_total, extract_zip_bytes=zip_bytes,
+                        hardlinks=os.stat(cache_roms).st_dev == os.stat(stage).st_dev)
+    free = check_space(need, root)
+    log(f"spazio sul Mac: servono circa {need.total / 1e9:.1f} GB, liberi {free / 1e9:.1f} GB")
+    if unknown_sizes:
+        log(f"attenzione: {unknown_sizes} file di dimensione ignota non sono contati nel calcolo dello spazio")
     tracker = _Overall(len(plan), total, overall)
     tracker.start()
     md5_index = _Md5Index(root / "cache" / "meta", log)

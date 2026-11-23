@@ -1,3 +1,5 @@
+import shutil
+
 import pytest
 from textual.widgets import Button, Input, SelectionList
 
@@ -358,3 +360,20 @@ async def test_invalid_device_yaml_blocks_start_and_logs_the_reason_not_the_secr
         log = "\n".join(str(l.text) for l in app.query_one("#log").lines)
         assert "ERRORE" in log and "chiave WPA" in log
         assert "scraper-segreta" not in log and "corta" not in log.replace("chiave WPA", "")
+
+
+# ---------------------------------------------------------------- spazio sul Mac nel riepilogo
+async def test_summary_shows_mac_free_space_and_warns_when_short(tmp_path, monkeypatch):
+    import collections
+    Usage = collections.namedtuple("Usage", "total used free")
+    (tmp_path / "roms.yaml").write_text(ROMS)
+    app = ConsoleMakerApp(root=tmp_path)
+    async with app.run_test(size=(140, 50)) as pilot:
+        monkeypatch.setattr(shutil, "disk_usage", lambda p: Usage(10**12, 0, 500 * 10**9))
+        await boot(app, pilot)
+        text = str(app.query_one("#summary").render())
+        assert "Spazio sul Mac: liberi 500 GB" in text and "ATTENZIONE: non bastano" not in text
+        monkeypatch.setattr(shutil, "disk_usage", lambda p: Usage(10**12, 0, 4 * 10**9))
+        app.refresh_summary()
+        text = str(app.query_one("#summary").render())
+        assert "Spazio sul Mac: liberi 4 GB" in text and "ATTENZIONE: non bastano" in text

@@ -1,6 +1,7 @@
 """Schermata unica con menu a scelta (Textual)."""
 from __future__ import annotations
 
+import shutil
 import time
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from .roms import (RomsConfig, RomsConfigError, System, applicable_bios, estimat
                    expand_system, load_roms)
 
 DISK_CHOICES = (16, 32, 64, 128, 256, 512)
+BASE_GZ_ESTIMATE = 2_400_000_000   # .gz di Batocera per RG SP; per gli altri dispositivi e' una stima
 IMAGE_BASE_GB = 8.9   # boot 8 GB + margine SHARE: stima, il valore esatto lo legge la pipeline
 OPTIONS = (
     ("fit_disk", "Se non ci stanno, togli i giochi meno importanti (vedi priority)"),
@@ -240,6 +242,18 @@ class ConsoleMakerApp(App):
             device = self.selected_device()
             if device:
                 lines.append(f"Preconfigurazione (device.yaml): {device.summary()}")
+            if self.loaded:
+                zips = sum(self.sizes.get(u) or 0 for s in chosen if s.extract
+                           for u in s.urls if u.lower().endswith(".zip"))
+                need = pipeline.space_needed(
+                    base_gz_size=BASE_GZ_ESTIMATE, base_gz_missing=BASE_GZ_ESTIMATE,
+                    roms_missing=known, roms_total=known, extract_zip_bytes=zips)
+                free = shutil.disk_usage(self.root).free
+                mac = f"Spazio sul Mac: liberi {free / 1e9:.0f} GB, servono circa {need.total / 1e9:.0f} GB"
+                if free < need.total:
+                    mac += (" - ATTENZIONE: non bastano (all'avvio la cache gia' scaricata "
+                            "viene contata, ma conviene liberare spazio)")
+                lines.append(mac)
             if disk:
                 usable = pipeline.disk_capacity_bytes(disk) / 1e9
                 lines.append(f"Disco {disk:g} GB (utilizzabili circa {usable:.1f} GB): "

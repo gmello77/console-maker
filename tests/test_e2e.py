@@ -74,6 +74,7 @@ class FakeNet:
         self.corrupt_always = set()
         self.served = {}                    # nome -> quante volte e' stato scaricato
         self.list_calls = []                # item di cui si sono chiesti i metadati
+        self.remote_sizes = {}              # url -> dimensione dichiarata (HEAD)
 
 
 @pytest.fixture
@@ -119,8 +120,11 @@ def fake_net(tmp_path, monkeypatch):
         net.list_calls.append(item)
         return net.meta.get(item, [])
 
+    net.remote_sizes[rel.url] = base_gz.stat().st_size
     monkeypatch.setattr(pipeline, "download", fake_download)
     monkeypatch.setattr(archive, "list_files", fake_list_files)     # mai la rete vera nei test
+    monkeypatch.setattr(pipeline, "remote_size", lambda url, session=None, auth=None: net.remote_sizes.get(url))
+    net.rel = rel
     return net
 
 
@@ -436,3 +440,76 @@ def test_md5_known_from_the_item_listing_is_used_without_asking_again(tmp_path, 
     with pytest.raises(pipeline.PipelineError, match="md5 errato"):
         pipeline.run(pipeline.Settings(target_key="rg-sp", disk_gb=4, systems=[bad],
                                        root=tmp_path / "r2"), lambda m: None, lambda *a: None)
+
+
+# ---------------------------------------------------------------- spazio libero sul Mac
+import collections
+
+_Usage = collections.namedtuple("Usage", "total used free")
+
+
+def free_space(monkeypatch, free_bytes):
+    monkeypatch.setattr(pipeline.shutil, "disk_usage", lambda p: _Usage(10**12, 0, free_bytes))
+
+
+def space_settings(tmp_path, sizes=None, **kw):
+    sysm = [System("mame", "MAME", ("https://archive.org/download/x/pacman.zip",), False)]
+    return pipeline.Settings(target_key="rg-sp", disk_gb=4, systems=sysm, root=tmp_path / "root",
+                             sizes=sizes or {}, **kw)
+
+
+def test_no_room_for_the_base_image_stops_before_downloading_anything(tmp_path, fake_net, monkeypatch):
+    fake_net.remote_sizes[fake_net.rel.url] = 2_350_000_000          # come l'immagine vera dell'RG SP
+    free_space(monkeypatch, 3_000_000_000)                           # 3 GB: non basta per scompattarla
+    with pytest.raises(pipeline.PipelineError, match=r"spazio insufficiente.*servono circa 6\.\d GB.*3\.0"):
+        pipeline.run(space_settings(tmp_path), lambda m: None, lambda *a: None)
+    assert fake_net.served == {}                                     # non e' stato scaricato niente
+
+
+def test_no_room_for_the_roms_stops_before_downloading_them(tmp_path, fake_net, monkeypatch):
+    free_space(monkeypatch, 20_000_000_000)
+    url = "https://archive.org/download/x/pacman.zip"
+    with pytest.raises(pipeline.PipelineError, match="spazio insufficiente") as e:
+        pipeline.run(space_settings(tmp_path, sizes={url: 30_000_000_000}),
+                     lambda m: None, lambda *a: None)
+    assert set(fake_net.served) == {IMG_NAME}                        # l'immagine base si', le ROM no
+    assert "cache/ occupa" in str(e.value) and "out/" in str(e.value)  # dice dove liberare spazio
+    assert not list((tmp_path / "root" / "out").glob("*.img"))
+
+
+def test_enough_room_logs_the_estimate_and_cached_files_are_not_counted(tmp_path, fake_net, monkeypatch):
+    free_space(monkeypatch, 500_000_000_000)
+    url = "https://archive.org/download/x/pacman.zip"
+    sizes = {url: 10_000_000_000}
+    logs = []
+    pipeline.run(space_settings(tmp_path, sizes=sizes), logs.append, lambda *a: None)
+    assert any("spazio sul Mac: servono circa 21." in m for m in logs)      # 10 da scaricare + 10,2 + margine
+    # stessa richiesta con il file gia' in cache (sparso, della dimensione dichiarata): non si riconta
+    cached = tmp_path / "root2" / "cache" / "roms" / "mame" / "pacman.zip"
+    cached.parent.mkdir(parents=True)
+    with open(cached, "wb") as f:
+        f.truncate(10_000_000_000)
+    logs2 = []
+    s2 = space_settings(tmp_path, sizes=sizes)
+    s2.root = tmp_path / "root2"
+    pipeline.run(s2, logs2.append, lambda *a: None)
+    assert any("spazio sul Mac: servono circa 11." in m for m in logs2)
+
+
+def test_partial_download_is_credited_by_allocated_bytes(tmp_path, fake_net, monkeypatch):
+    free_space(monkeypatch, 500_000_000_000)
+    part = tmp_path / "root" / "cache" / "roms" / "mame" / "pacman.zip.part"
+    part.parent.mkdir(parents=True)
+    with open(part, "wb") as f:
+        f.truncate(10_000_000_000)                                   # preallocato ma vuoto (sparso)
+    logs = []
+    url = "https://archive.org/download/x/pacman.zip"
+    pipeline.run(space_settings(tmp_path, sizes={url: 10_000_000_000}), logs.append, lambda *a: None)
+    assert any("spazio sul Mac: servono circa 21." in m for m in logs)       # sparso = non conta come scaricato
+
+
+def test_unknown_sizes_are_reported(tmp_path, fake_net, monkeypatch):
+    free_space(monkeypatch, 500_000_000_000)
+    logs = []
+    pipeline.run(space_settings(tmp_path), logs.append, lambda *a: None)
+    assert any("1 file di dimensione ignota non sono contati" in m for m in logs)
