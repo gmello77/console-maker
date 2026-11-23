@@ -1,6 +1,13 @@
 # TODO console-maker
 
-Stato al 2026-11-20. Le voci sono in ordine di lavoro. Convenzioni: `[x]` fatto e testato, `[~]` fatto ma con qualcosa da verificare, `[ ]` da fare.
+Stato al 2026-11-23 (ultimo commit: `0426617`, 168 test verdi). Le voci sono in ordine di lavoro. Convenzioni: `[x]` fatto e testato, `[~]` fatto ma con qualcosa da verificare, `[ ]` da fare.
+
+## Come riprendere
+1. `cd` nella cartella del progetto e controlla che Docker sia acceso (serve per i test end-to-end e per creare le immagini).
+2. Ambiente: `.venv/bin/python -m pytest` deve dare tutto verde (circa 80 secondi, tutti offline). Se manca il venv: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt`.
+3. Programma: `.venv/bin/python console_maker.py`. Servono i tuoi file locali, che **non sono nella repo** (sono in `.gitignore`): `roms.yaml` (da `roms.example.yaml`), facoltativi `device.yaml` (da `device.example.yaml`), `config.yaml` e `selections.yaml` (si creano da soli). Su un'altra macchina vanno ricreati.
+4. Con Claude Code: apri il terminale nella cartella e scrivi per esempio *"leggi TODO.md e README.md e riparti dal primo punto aperto"*. In alternativa `claude --continue` riprende l'ultima conversazione di questa cartella e `claude --resume` ne fa scegliere una. Il TODO e il README sono la memoria affidabile del progetto: la conversazione può non esserci più.
+5. **Prima cosa da fare con le mani**: scrivere con balenaEtcher l'immagine in `out/` su una microSD e avviarla sull'RG SP. È l'unica prova che parte davvero e che SHARE si espande; tutto il resto (preconfigurazione, BIOS, ROM) è provato solo su immagini finte e sull'immagine su disco.
 
 ## Fatto
 - [x] v1: schermata Textual, ultima immagine Batocera dal mirror, download con ripresa, md5, ROM da `roms.yaml`, scrittura nella SHARE via Docker. Provata con una pipeline reale per l'RG SP (immagine da 9,1 GB, ROM verificata con SHA-256).
@@ -15,14 +22,15 @@ Stato al 2026-11-20. Le voci sono in ordine di lavoro. Convenzioni: `[x]` fatto 
 - [x] Due barre di avanzamento (file in corso e totale ROM+BIOS) con velocità e tempo stimato.
 - [x] Download: stop immediato su 401/403/404/410 con messaggio chiaro, avviso se un item è ad accesso riservato.
 
-## In corso
-- [~] **Login archive.org** (per gli item riservati, es. `htgdb-gamepacks`, che dà 401 senza login).
+## Login archive.org
+- [x] **Login archive.org** (per gli item riservati, es. `htgdb-gamepacks`, che dà 401 senza login). **Il login funziona con un account vero** (confermato dall'utente il 2026-11-20).
   - Fatto e testato (59 test): `cm/auth.py` (sessione salvata con permessi 600, cookie solo per archive.org e sottodomini in HTTPS, password mai salvata, mai nei log), `cm/login_screen.py`, pulsante e stato nella schermata, README.
   - Bug risolto: l'id `login` era uguale nel pulsante principale e nella finestra, quindi il clic su "Accedi" apriva una seconda finestra. Ora gli id sono distinti e le finestre fermano la propagazione dei clic.
   - Corretto il 2026-11-20: il login usava `op=authenticate` (errore mio, scritto a memoria); il client ufficiale `ia` usa `op=login`. I messaggi d'errore ora dicono solo il motivo che archive.org dichiara (`account_not_found`, `account_bad_password`), un 401 generico non è più "password errata".
-  - **Non verificato con un account vero:** il login riuscito (il formato della risposta è quello letto nel codice di `ia`, provato solo con credenziali false) e che i cookie arrivino al server dei dati dopo il redirect. Serve un account vero: provare con `htgdb-gamepacks`. Se un account gratuito non basta, il 401 col login ora dà un messaggio dedicato.
+  - **Ancora da provare:** scaricare davvero un file riservato (es. da `htgdb-gamepacks`) dopo il login, per vedere se un account gratuito basta e se i cookie arrivano al server dei dati dopo il redirect. Se non basta, il 401 col login dà un messaggio dedicato.
 
-## Prossimi punti (priorità alta)
+## Prossimo passo suggerito
+- [ ] **Scaricare più file contemporaneamente** (oggi i file vanno in serie, ognuno con 4 connessioni): è la voce che accorcia di più i tempi, visto che archive.org è lento. Poi, nell'ordine: priorità per singolo gioco, scelta del canale/versione, immagine compressa.
 
 ## Richieste dell'utente ancora aperte
 - [ ] **Filtro per genere** (azione, avventura...). Serve prima una fonte dati: i nomi file non contengono il genere. Candidate: DAT di libretro-database, metadati di ScreenScraper (account e limiti), gamelist. Da scegliere e verificare sul campo prima di promettere la funzione.
