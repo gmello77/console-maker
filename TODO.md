@@ -8,6 +8,7 @@ Stato al 2026-11-20. Le voci sono in ordine di lavoro. Convenzioni: `[x]` fatto 
 - [x] Punto 2: adattamento automatico al disco (`priority` per sistema, opzione attiva di default, dimensione esatta letta dall'MBR dell'immagine compressa).
 - [x] Punto 3, BIOS: sezione `bios:` in `roms.yaml` (`urls`/`item`, `dir`, `for`), in `userdata/bios`; contati nello spazio, mai sfoltiti, esclusi se i loro sistemi non ci sono. Provato con Docker vero. Non provato: BIOS reali su un dispositivo.
 - [x] **Download a pezzi in parallelo** (`cm/download.py`): 4 connessioni di default (`connections` in `config.yaml`), ripresa per pezzo, fallback automatico se il server non accetta Range. Misurato su archive.org: ~7 volte più veloce di una connessione.
+- [x] **Verifica md5 di ROM e BIOS** (`cm/pipeline.py`, `cm/archive.py`): md5 da elenco item o dai metadati per i link singoli; scarta e riscarica una volta, poi errore; verifica anche la cache; copre i download a pezzi. Provato con Docker (rete finta) e su archive.org vero.
 - [x] **Preconfigurazione** (`device.yaml`, `cm/device.py`): lingua, tastiera, fuso, hostname, Wi-Fi (più reti, una nascosta), ScreenScraper, chiavi extra. Fusa nel `batocera.conf` predefinito estratto dall'immagine (`builder/extract_defaults.sh`), verificato su quella vera: cambiano solo le righe scelte. Provato con Docker vero su immagine finta. **Non provato su un dispositivo**: che al primo avvio Batocera rispetti i file è dedotto dal codice di `S12populateshare`, non da un avvio.
 - [x] Corretto: ultime opzioni non raggiungibili dopo il caricamento dei sistemi (colonne alte quanto il contenuto, clippate dal menu). Ora le colonne scorrono; test a 3 dimensioni di terminale con clic reale sull'ultima opzione.
 - [x] Due barre di avanzamento (file in corso e totale ROM+BIOS) con velocità e tempo stimato.
@@ -21,7 +22,6 @@ Stato al 2026-11-20. Le voci sono in ordine di lavoro. Convenzioni: `[x]` fatto 
   - **Non verificato con un account vero:** il login riuscito (il formato della risposta è quello letto nel codice di `ia`, provato solo con credenziali false) e che i cookie arrivino al server dei dati dopo il redirect. Serve un account vero: provare con `htgdb-gamepacks`. Se un account gratuito non basta, il 401 col login ora dà un messaggio dedicato.
 
 ## Prossimi punti (priorità alta)
-- [ ] **Verifica checksum delle ROM** con gli md5 di archive.org (già letti in `ArchiveFile.md5`, oggi non usati): ricontrollo dopo il download e riscarico se non corrispondono. File: `cm/download.py`.
 - [ ] **Controllo spazio sul Mac** prima di partire (cache + stage + immagine, 9 GB e più).
 
 ## Richieste dell'utente ancora aperte
@@ -32,7 +32,6 @@ Stato al 2026-11-20. Le voci sono in ordine di lavoro. Convenzioni: `[x]` fatto 
 - [ ] Scelta del canale e della versione (stable o release candidate; oggi l'RG SP usa la RC senza chiedere).
 - [ ] Immagine finale compressa (`.img.xz` o `.zip`, che Etcher legge).
 - [ ] Scaricare più file contemporaneamente (oggi i file vanno in serie, ognuno con 4 connessioni; velocità ed ETA nella schermata sono già fatti).
-- [ ] Controllo di integrità dei pezzi scaricati in parallelo (oggi si fida del server; il md5 finale di archive.org non è ancora verificato per le ROM).
 - [ ] Aggiungere ROM a un'immagine o a una SD già pronta, senza rifare tutto.
 - [ ] Filtri per regione (EU/USA/JP) e per demo/beta/proto.
 - [ ] Priorità per singolo gioco, non solo per sistema (oggi dentro un sistema vale l'ordine alfabetico).
@@ -51,6 +50,8 @@ Stato al 2026-11-20. Le voci sono in ordine di lavoro. Convenzioni: `[x]` fatto 
 - [ ] **Committare e pushare** il lavoro dei punti 1 e 2 e del login: ultimo commit pubblicato `c407b64`, il resto è solo in locale.
 
 ## Limiti noti
+- La verifica md5 rilegge ogni file per intero a ogni esecuzione, anche se già verificato in precedenza (con cache da decine di GB sono minuti). Idea: salvare accanto al file md5+dimensione+data e saltare il ricalcolo se non è cambiato.
+- Gli md5 si ricavano solo dagli URL `archive.org/download/<item>/<file>`: i server dei dati e i mirror non si riconoscono e non si verificano (a meno che l'md5 non sia già noto dall'elenco di un `item:`).
 - File di dimensione ignota contano 0 byte nel calcolo dello spazio (il log lo segnala).
 - Per i sistemi con `extract: true` la dimensione dello zip sottostima lo spazio reale dopo la scompattazione.
 - L'adattamento al disco "salta e prova il successivo": favorisce i giochi piccoli.

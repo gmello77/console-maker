@@ -44,6 +44,7 @@ class System:
     include: str | None = None                # regex sul nome file
     exclude: str | None = None
     sizes: Mapping[str, int] = field(default_factory=dict, compare=False)  # url -> byte noti
+    md5s: Mapping[str, str] = field(default_factory=dict, compare=False)   # url -> md5 pubblicato
     priority: int = 0                         # piu' alta = tenuto per primo se manca spazio
     dir: str = ""                             # solo BIOS: sottocartella di userdata/bios
     only_for: tuple[str, ...] = ()            # solo BIOS: servono se c'e' uno di questi sistemi
@@ -202,8 +203,10 @@ def expand_system(system: System, all_files: list[archive.ArchiveFile],
             f"{system.key}: {len(locked)} file dell'item {system.item} sono ad accesso riservato "
             "(serve il login di archive.org): il loro download fallira' con errore 401")
     new = {archive.file_url(system.item, f.name): f.size for f in chosen}
+    md5s = {archive.file_url(system.item, f.name): f.md5.lower() for f in chosen if f.md5}
     urls = tuple(dict.fromkeys(system.urls + tuple(new)))
-    return replace(system, urls=urls, sizes={**system.sizes, **new}), warnings
+    return replace(system, urls=urls, sizes={**system.sizes, **new},
+                   md5s={**system.md5s, **md5s}), warnings
 
 
 def estimate_sizes(urls: list[str], workers: int = 8, auth=None) -> dict[str, int | None]:

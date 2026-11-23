@@ -12,6 +12,7 @@ from typing import Callable, Mapping
 
 from .auth import ArchiveAuth
 from .device import DeviceConfig, merge_conf, merge_es_settings
+from . import archive
 from .distro import Release, fetch_md5, find_latest, target_by_key
 from .download import (DEFAULT_CONNECTIONS, download, filename_from_url, gunzip_sparse,
                        md5_file, remote_size)
@@ -167,6 +168,62 @@ def preconfigure(device: DeviceConfig, img: Path, stage: Path, work: Path, log: 
     log(f"preconfigurazione applicata: {device.summary()}")
 
 
+class _Md5Index:
+    """md5 pubblicati da archive.org per gli URL scaricati, con un solo accesso per item."""
+
+    def __init__(self, cache_dir: Path, log: Log) -> None:
+        self.cache_dir, self.log = cache_dir, log
+        self._items: dict[str, dict[str, str]] = {}
+
+    def expected(self, system: System, url: str) -> str | None:
+        if url in system.md5s:                       # gia' noto dall'elenco dell'item
+            return system.md5s[url]
+        ref = archive.parse_download_url(url)
+        if ref is None:
+            return None
+        item, name = ref
+        if item not in self._items:
+            try:
+                files = archive.list_files(item, self.cache_dir)
+                self._items[item] = {f.name: f.md5.lower() for f in files if f.md5}
+            except Exception as e:                   # rete, item riservato...: non si verifica
+                self.log(f"md5 non disponibili per l'item {item}: {e}")
+                self._items[item] = {}
+        return self._items[item].get(name)
+
+
+def _verified_download(settings: "Settings", system: System, url: str, dest_path: Path,
+                       index: _Md5Index, on_progress: Callable[[int, int], None],
+                       progress: Progress, log: Log) -> tuple[Path, bool]:
+    """Scarica `url` e, se possibile, ne verifica l'md5. Ritorna (file, verificato).
+
+    Un file sbagliato (anche gia' in cache) si scarta e si riscarica una volta; se resta
+    sbagliato la pipeline si ferma: meglio che mettere una ROM corrotta nell'immagine."""
+    def fetch() -> Path:
+        return download(url, dest_path, on_progress, auth=settings.auth,
+                        connections=settings.connections)
+
+    dest = fetch()
+    if not settings.verify_md5:
+        return dest, False
+    want = index.expected(system, url)
+    if want is None:
+        return dest, False
+    name = dest.name
+    for attempt in (1, 2):
+        got = md5_file(dest, lambda d, t: progress(f"Verifica md5: {name}", d, t))
+        if got == want:
+            return dest, True
+        dest.unlink(missing_ok=True)
+        if attempt == 2:
+            break
+        log(f"md5 diverso per {name} (cache corrotta o download danneggiato): riscarico")
+        dest = fetch()
+    raise PipelineError(
+        f"md5 errato per {name} anche dopo un secondo download: il file su archive.org e' "
+        f"cambiato o la connessione lo danneggia. Atteso {want}, ottenuto {got}.")
+
+
 class _Overall:
     """Avanzamento complessivo dei download di ROM e BIOS."""
 
@@ -260,6 +317,8 @@ def run(settings: Settings, log: Log, progress: Progress, overall: Overall | Non
     total = sum(sizes.get(u) or s.sizes.get(u) or 0 for s, u in plan)
     tracker = _Overall(len(plan), total, overall)
     tracker.start()
+    md5_index = _Md5Index(root / "cache" / "meta", log)
+    checked = unchecked = 0
     for kind, system, cache_root, area in groups:
         for url in system.urls:
             name = filename_from_url(url)
@@ -270,10 +329,15 @@ def run(settings: Settings, log: Log, progress: Progress, overall: Overall | Non
                 progress(label, d, t)
                 tracker.partial(d)
 
-            dest = download(url, cache_root / system.key / name, on_progress, auth=settings.auth,
-                            connections=settings.connections)
+            dest, ok = _verified_download(settings, system, url, cache_root / system.key / name,
+                                          md5_index, on_progress, progress, log)
+            checked += ok
+            unchecked += not ok
             tracker.finished(dest)
         stage_system(system, cache_root, stage, area=area)
+    if settings.verify_md5 and plan:
+        log(f"md5: {checked} file verificati" +
+            (f", {unchecked} senza md5 pubblicato (non verificabili)" if unchecked else ""))
     if settings.create_all_dirs:
         for key in settings.all_system_keys:
             (stage / "roms" / key).mkdir(parents=True, exist_ok=True)

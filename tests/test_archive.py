@@ -195,3 +195,34 @@ def test_download_fails_fast_on_401_without_retrying(tmp_path):
         srv.shutdown()
     assert len(gets) == 1          # un solo tentativo, non quattro con le attese
     assert not (tmp_path / "x.zip").exists()
+
+
+# ---------------------------------------------------------------- md5 e URL di download
+@pytest.mark.parametrize("url, expected", [
+    ("https://archive.org/download/my-item/Game.zip", ("my-item", "Game.zip")),
+    ("https://archive.org/download/my-item/Game%20%28EU%29.zip", ("my-item", "Game (EU).zip")),
+    ("https://archive.org/download/my-item/sub/dir/Game.zip", ("my-item", "sub/dir/Game.zip")),
+    ("https://www.archive.org/download/my-item/a.zip", ("my-item", "a.zip")),
+    ("https://archive.org/details/my-item", None),                       # non e' un download
+    ("https://archive.org/download/my-item", None),                       # manca il file
+    ("https://archive.org/download/my-item/", None),
+    ("https://example.com/download/my-item/a.zip", None),                 # non e' archive.org
+    ("https://evilarchive.org/download/my-item/a.zip", None),
+    ("https://ia800000.us.archive.org/0/items/my-item/a.zip", None),      # server dei dati: non riconosciuto
+    ("https://archive.org/download/..%2Fetc/a.zip", None),                # item non valido
+])
+def test_parse_download_url(url, expected):
+    assert archive.parse_download_url(url) == expected
+
+
+def test_parse_download_url_roundtrips_file_url():
+    for name in ("Game (EU) #1.zip", "sub/dir/Gioco è.chd", "a b.bin"):
+        assert archive.parse_download_url(archive.file_url("itm", name)) == ("itm", name)
+
+
+def test_expand_system_collects_md5s_lowercased():
+    allf = [F("a.chd", 10, "ABCDEF0123456789ABCDEF0123456789"), F("b.chd", 20, None)]
+    base = parse_roms({"systems": {"psx": {"item": "i"}}}).systems["psx"]
+    s, _ = expand_system(base, allf)
+    assert s.md5s == {archive.file_url("i", "a.chd"): "abcdef0123456789abcdef0123456789"}
+    assert len(s.urls) == 2                                              # b.chd c'e' ma senza md5

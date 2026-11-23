@@ -46,6 +46,9 @@ Invece di elencare ogni file puoi indicare un intero item di archive.org:
 
 Lo script legge l'elenco dei file da archive.org (con dimensioni). Con **Scegli i giochi** nella schermata apri l'elenco del sistema evidenziato, cerchi per nome e spunti solo quelli che vuoi: i file di uno stesso gioco (cue+bin, dischi multipli, m3u) restano insieme. La scelta va in `selections.yaml` (non tocca `roms.yaml`). Un item senza filtri né scelta scarica tutto, quindi controlla il totale mostrato.
 
+### Verifica dei file (md5)
+Dopo ogni download, e anche per i file già in `cache/`, lo script confronta l'md5 con quello pubblicato da archive.org (per gli `item:` è già nell'elenco; per i link singoli `archive.org/download/<item>/<file>` lo legge dai metadati dell'item, una volta sola per item). Un file sbagliato (download danneggiato o copia in cache corrotta, anche della stessa dimensione) viene scartato e riscaricato una volta; se resta sbagliato la pipeline si ferma con un errore, invece di mettere una ROM corrotta nell'immagine. Copre anche i pezzi dei download in parallelo. Nel log: `md5: N file verificati, M senza md5 pubblicato`. I file non verificabili (link non archive.org, md5 mancante, metadati non raggiungibili) vengono segnalati, mai nascosti. L'opzione "Verifica md5 dei file scaricati" la disattiva (utile con cache molto grandi: il calcolo legge ogni file per intero).
+
 ### Preconfigurazione (lingua, Wi-Fi, ScreenScraper)
 Copia `device.example.yaml` in `device.yaml` e togli il `#` alle impostazioni che vuoi: lingua (`it_IT`), tastiera, fuso orario, nome in rete, una o più reti Wi-Fi e le credenziali di ScreenScraper. Al primo avvio il dispositivo è già in italiano, collegato al Wi-Fi e con lo scraper pronto.
 

@@ -26,7 +26,7 @@ OPTIONS = (
     ("fit_disk", "Se non ci stanno, togli i giochi meno importanti (vedi priority)"),
     ("skip_bios", "Non includere i file BIOS di roms.yaml"),
     ("skip_device", "Non applicare device.yaml (lingua, Wi-Fi, ScreenScraper)"),
-    ("verify_md5", "Verifica md5 dell'immagine Batocera"),
+    ("verify_md5", "Verifica md5 dei file scaricati (immagine, ROM, BIOS)"),
     ("keep_cache", "Tieni i download in cache (cache/)"),
     ("create_all_dirs", "Crea le cartelle vuote di tutti i sistemi di roms.yaml"),
 )

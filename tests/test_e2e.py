@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from cm import pipeline
+from cm import archive, pipeline
+from cm.archive import ArchiveFile
 from cm.distro import Release, target_by_key
 from cm.download import md5_file
 from cm.roms import System
@@ -63,6 +64,18 @@ mkdir -p /m; mount -o ro $L /m; trap 'umount /m; losetup -d $L' EXIT
     assert out == b"".join(expect.values())
 
 
+class FakeNet:
+    """Rete finta: file buoni, md5 pubblicati per item e download corrotti a comando."""
+
+    def __init__(self, files):
+        self.files = files                  # nome -> file buono
+        self.meta = {}                      # item -> [ArchiveFile] (con md5)
+        self.corrupt_once = set()           # il primo download di questi file e' danneggiato
+        self.corrupt_always = set()
+        self.served = {}                    # nome -> quante volte e' stato scaricato
+        self.list_calls = []                # item di cui si sono chiesti i metadati
+
+
 @pytest.fixture
 def fake_net(tmp_path, monkeypatch):
     base_gz = tmp_path / "net" / IMG_NAME
@@ -83,14 +96,32 @@ def fake_net(tmp_path, monkeypatch):
     bios_dc = tmp_path / "net" / "dc_boot.bin"
     bios_dc.write_bytes(b"DCBIOS")
 
+    net = FakeNet({IMG_NAME: base_gz, "nes-set.zip": set_zip, "pacman.zip": arcade,
+                   "scph1001.bin": bios_psx, "dc_boot.bin": bios_dc})
+    for item, names in (("x", ("nes-set.zip", "pacman.zip")), ("b", ("scph1001.bin", "dc_boot.bin"))):
+        net.meta[item] = [ArchiveFile(n, net.files[n].stat().st_size, md5_file(net.files[n]))
+                          for n in names]
+
     def fake_download(url, dest, progress=None, retries=4, auth=None, connections=None):
-        src = {IMG_NAME: base_gz, "nes-set.zip": set_zip, "pacman.zip": arcade,
-               "scph1001.bin": bios_psx, "dc_boot.bin": bios_dc}[dest.name]
+        name = dest.name
+        src = net.files[name]
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(src, dest)
+        if dest.exists() and dest.stat().st_size == src.stat().st_size:
+            return dest                      # come il vero download(): un file completo in cache si riusa
+        n = net.served[name] = net.served.get(name, 0) + 1
+        if name in net.corrupt_always or (name in net.corrupt_once and n == 1):
+            dest.write_bytes(b"X" * src.stat().st_size)      # stessa dimensione, contenuto sbagliato
+        else:
+            shutil.copy(src, dest)
         return dest
 
+    def fake_list_files(item, cache_dir=None, session=None):
+        net.list_calls.append(item)
+        return net.meta.get(item, [])
+
     monkeypatch.setattr(pipeline, "download", fake_download)
+    monkeypatch.setattr(archive, "list_files", fake_list_files)     # mai la rete vera nei test
+    return net
 
 
 def settings(tmp_path, **kw):
@@ -319,3 +350,89 @@ def test_secrets_are_removed_from_disk_even_if_the_builder_fails(tmp_path, fake_
     leftovers = [p for p in (tmp_path / "root").rglob("*")
                  if p.is_file() and any(s.encode() in p.read_bytes() for s in ("CasaMia", "scraper-segreta"))]
     assert leftovers == []                                 # nessun file con Wi-Fi o password su disco
+
+
+# ---------------------------------------------------------------- verifica md5 delle ROM e dei BIOS
+def md5_settings(tmp_path, **kw):
+    systems = [System("nes", "NES", ("https://archive.org/download/x/nes-set.zip",), True),
+               System("mame", "MAME", ("https://archive.org/download/x/pacman.zip",), False)]
+    bios = [System("dc", "DC", ("https://archive.org/download/b/dc_boot.bin",))]
+    return pipeline.Settings(target_key="rg-sp", disk_gb=4, systems=systems, bios=bios,
+                             root=tmp_path / "root", **kw)
+
+
+def test_all_files_are_verified_against_published_md5(tmp_path, fake_net):
+    logs = []
+    final = pipeline.run(md5_settings(tmp_path), logs.append, lambda *a: None)
+    assert any("md5: 3 file verificati" in m and "senza md5" not in m for m in logs)
+    assert sorted(set(fake_net.list_calls)) == ["b", "x"]
+    assert len(fake_net.list_calls) == 2                    # un accesso per item, non uno per file
+    verify_share(final, {"roms/mame/pacman.zip": b"PACZIP", "bios/dc_boot.bin": b"DCBIOS"})
+
+
+def test_damaged_download_is_discarded_and_fetched_again(tmp_path, fake_net):
+    fake_net.corrupt_once.add("pacman.zip")
+    logs = []
+    final = pipeline.run(md5_settings(tmp_path), logs.append, lambda *a: None)
+    assert any("md5 diverso per pacman.zip" in m and "riscarico" in m for m in logs)
+    assert fake_net.served["pacman.zip"] == 2
+    verify_share(final, {"roms/mame/pacman.zip": b"PACZIP"})        # nell'immagine c'e' quello buono
+
+
+def test_corrupt_file_already_in_cache_is_caught(tmp_path, fake_net):
+    cached = tmp_path / "root" / "cache" / "roms" / "mame" / "pacman.zip"
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(b"X" * len(b"PACZIP"))                      # stessa dimensione: il download lo riusa
+    logs = []
+    final = pipeline.run(md5_settings(tmp_path), logs.append, lambda *a: None)
+    assert any("md5 diverso per pacman.zip" in m for m in logs)
+    verify_share(final, {"roms/mame/pacman.zip": b"PACZIP"})
+
+
+def test_persistent_mismatch_stops_the_pipeline_and_leaves_no_bad_file(tmp_path, fake_net):
+    fake_net.corrupt_always.add("pacman.zip")
+    with pytest.raises(pipeline.PipelineError, match=r"md5 errato per pacman\.zip.*Atteso"):
+        pipeline.run(md5_settings(tmp_path), lambda m: None, lambda *a: None)
+    assert fake_net.served["pacman.zip"] == 2                       # un solo nuovo tentativo
+    assert not (tmp_path / "root" / "cache" / "roms" / "mame" / "pacman.zip").exists()
+    assert not list((tmp_path / "root" / "out").glob("*.img"))      # niente immagine con ROM corrotte
+
+
+def test_verification_can_be_turned_off(tmp_path, fake_net):
+    fake_net.corrupt_always.add("pacman.zip")
+    logs = []
+    pipeline.run(md5_settings(tmp_path, verify_md5=False), logs.append, lambda *a: None)
+    assert not any("md5:" in m or "md5 diverso" in m for m in logs)
+    assert fake_net.list_calls == []                                # nemmeno si chiedono i metadati
+
+
+def test_files_without_published_md5_are_reported_not_hidden(tmp_path, fake_net):
+    fake_net.meta["x"] = [f for f in fake_net.meta["x"] if f.name != "pacman.zip"]   # md5 mancante
+    logs = []
+    pipeline.run(md5_settings(tmp_path), logs.append, lambda *a: None)
+    assert any("md5: 2 file verificati, 1 senza md5 pubblicato" in m for m in logs)
+
+
+def test_metadata_failure_degrades_to_unverified_with_a_clear_message(tmp_path, fake_net, monkeypatch):
+    def boom(item, cache_dir=None, session=None):
+        raise LookupError("item non raggiungibile")
+    monkeypatch.setattr(archive, "list_files", boom)
+    logs = []
+    pipeline.run(md5_settings(tmp_path), logs.append, lambda *a: None)
+    assert any("md5 non disponibili per l'item x" in m and "non raggiungibile" in m for m in logs)
+    assert any("3 senza md5 pubblicato" in m for m in logs)
+
+
+def test_md5_known_from_the_item_listing_is_used_without_asking_again(tmp_path, fake_net):
+    """URL non riconoscibile come archive.org (mirror): vale l'md5 gia' noto in System.md5s."""
+    url = "https://mirror.example/files/pacman.zip"
+    good = md5_file(fake_net.files["pacman.zip"])
+    ok = System("mame", "MAME", (url,), md5s={url: good})
+    bad = System("mame", "MAME", (url,), md5s={url: "0" * 32})
+    logs = []
+    pipeline.run(pipeline.Settings(target_key="rg-sp", disk_gb=4, systems=[ok],
+                                   root=tmp_path / "r1"), logs.append, lambda *a: None)
+    assert any("md5: 1 file verificati" in m for m in logs) and fake_net.list_calls == []
+    with pytest.raises(pipeline.PipelineError, match="md5 errato"):
+        pipeline.run(pipeline.Settings(target_key="rg-sp", disk_gb=4, systems=[bad],
+                                       root=tmp_path / "r2"), lambda m: None, lambda *a: None)

@@ -11,7 +11,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
 
 import requests
 
@@ -45,6 +45,19 @@ class Game:
 
 def file_url(item: str, name: str) -> str:
     return DOWNLOAD_URL.format(item=item, name=quote(name))
+
+
+def parse_download_url(url: str) -> tuple[str, str] | None:
+    """(item, nome file) per gli URL del tipo https://archive.org/download/<item>/<file>.
+    Altre forme (mirror, server dei dati) non si riconoscono: None."""
+    p = urlparse(url)
+    if p.hostname not in ("archive.org", "www.archive.org"):
+        return None
+    parts = p.path.split("/", 3)                  # ['', 'download', item, 'file/anche/in/sottocartelle']
+    if len(parts) != 4 or parts[1] != "download" or not parts[2] or not parts[3]:
+        return None
+    item, name = unquote(parts[2]), unquote(parts[3])
+    return (item, name) if ITEM_RE.match(item) else None
 
 
 def parse_files(data: dict) -> list[ArchiveFile]:
